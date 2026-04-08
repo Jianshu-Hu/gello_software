@@ -2,7 +2,10 @@
   controller_manager:
     ros__parameters:
       update_rate: 1000  # Hz
-
+      thread_priority: 98
+      cpu_affinity: [4,5]
+      lock_memory: true
+      
       joint_impedance_controller:
         type: franka_fr3_arm_controllers/JointImpedanceController
 
