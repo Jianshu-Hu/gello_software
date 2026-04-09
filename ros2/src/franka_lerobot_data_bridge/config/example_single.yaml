@@ -1,0 +1,24 @@
+lerobot_data_bridge:
+  ros__parameters:
+    sample_rate_hz: 15.0
+    max_data_age_sec: 0.5
+    publish_host: "127.0.0.1"
+    publish_port: 5555
+    task_name: "franka_gello_single_arm_teleop"
+    include_gripper: true
+    include_right_arm: false
+
+    left_robot_joint_state_topic: "/left/franka/joint_states"
+    left_arm_action_topic: "/left/gello/joint_states"
+    left_robot_gripper_state_topic: "/left/franka_gripper/joint_states"
+    left_gripper_action_topic: "/left/gripper/gripper_client/target_gripper_width_percent"
+
+    camera_1_enabled: true
+    camera_1_name: "cam_left"
+    camera_1_topic: "/cameras/cam_left/image_raw"
+    camera_2_enabled: true
+    camera_2_name: "cam_front"
+    camera_2_topic: "/cameras/cam_front/image_raw"
+    camera_3_enabled: false
+    camera_3_name: "cam_right"
+    camera_3_topic: "/cameras/cam_right/image_raw"

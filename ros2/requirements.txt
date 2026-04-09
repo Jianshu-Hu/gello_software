@@ -1,3 +1,6 @@
 dynamixel_sdk
+numpy
+pyrealsense2
+pyzmq
 PyYAML
 tyro

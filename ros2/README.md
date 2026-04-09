@@ -2,6 +2,64 @@
 
 This folder contains all required ROS 2 packages for using GELLO with a Franka FR3 robot.
 
+## LeRobot Data Bridge
+
+This workspace now also includes `franka_lerobot_data_bridge`, a ROS 2 node that listens to:
+
+- robot joint states
+- teleoperation joint states from GELLO
+- robot gripper joint states
+- gripper commands
+- three RGB camera topics
+
+and publishes synchronized samples over ZMQ for `lerobot_collection.py`.
+
+The default bridge config file is:
+
+```bash
+src/franka_lerobot_data_bridge/config/example_duo.yaml
+```
+
+Start it after the robot, gripper, GELLO publisher, and camera topics are already live:
+
+```bash
+cd /workspace/ros2 && colcon build && source install/setup.bash
+ros2 launch franka_lerobot_data_bridge bridge.launch.py
+```
+
+For single-arm recording:
+
+```bash
+ros2 launch franka_lerobot_data_bridge bridge.launch.py config_file:=example_single.yaml
+```
+
+If your namespaces or camera topic names differ from the defaults, update the selected YAML file before launching.
+
+## RealSense Camera Publisher
+
+This workspace also includes `franka_realsense_camera_publisher`, which publishes RGB image topics for up to three RealSense cameras.
+
+The default config file is:
+
+```bash
+src/franka_realsense_camera_publisher/config/example_three_cameras.yaml
+```
+
+Run it with:
+
+```bash
+cd /workspace/ros2 && colcon build && source install/setup.bash
+ros2 launch franka_realsense_camera_publisher cameras.launch.py
+```
+
+If `camera_1_serial`, `camera_2_serial`, or `camera_3_serial` are left empty, the node auto-assigns detected RealSense devices in sorted serial-number order. For stable camera-to-name mapping, set those serial numbers explicitly in the YAML.
+
+`franka_realsense_camera_publisher` imports `pyrealsense2` from the ROS 2 Python environment. On Ubuntu with ROS 2 Humble in this workspace, that means Python 3.10. If the node fails with `ModuleNotFoundError: No module named 'pyrealsense2'`, install it into that interpreter:
+
+```bash
+python3.10 -m pip install pyrealsense2
+```
+
 ## Setup Environment
 
 ### Option 1: VS-Code Dev-Container (recommended)
@@ -86,7 +144,9 @@ Example output:
 - U2D2: `usb-FTDI_USB__-__Serial_Converter_FT7WBG6` 
 - OpenRB-150: `usb-ROBOTIS_OpenRB-150_2B375CB3503059384C2E3120FF053624-if00`
 
-Use the ID to update the `com_port` parameter in your GELLO configuration file located in `/workspace/ros2/src/franka_gello_state_publisher/config/`.
+Use the full path `/dev/serial/by-id/<ID>` for the `com_port` parameter in your GELLO
+configuration file located in `/workspace/ros2/src/franka_gello_state_publisher/config/`.
+The launcher also accepts the bare by-id value `<ID>` and resolves it automatically.
 
 Rebuild the project to ensure the updated configuration is applied:
 
@@ -292,7 +352,7 @@ colcon test
 ### SerialException(msg.errno, "could not open port {}: {}".format(self._port, msg))
 
 The open com port could not be opened. Possible reasons are:
-- Wrongly specified, the full path is required, such as: `/dev/serial/by-id/usb-FTDI_***`
+- Wrongly specified, use either the full path `/dev/serial/by-id/usb-FTDI_***` or the bare by-id value `usb-FTDI_***`
 - The device was plugged in after the docker container started, re-open the container
   
 ### libfranka: Incompatible library version (server version: X, library version: Y).
@@ -321,4 +381,3 @@ If this helps, you can add a permanent udev rule:
 ## Acknowledgements
 The source code for the Robotiq gripper control is based on
 [ros2_robotiq_gripper](https://github.com/PickNikRobotics/ros2_robotiq_gripper.git), licensed under the BSD 3-Clause license.
-

@@ -1,0 +1,25 @@
+realsense_camera_publisher:
+  ros__parameters:
+    width: 640
+    height: 480
+    camera_fps: 30
+    publish_rate_hz: 30.0
+    frame_id_prefix: "realsense"
+
+    camera_1_enabled: true
+    camera_1_name: "cam_left"
+    camera_1_serial: ""
+    camera_1_flip: false
+    camera_1_topic: "/cameras/cam_left/image_raw"
+
+    camera_2_enabled: true
+    camera_2_name: "cam_front"
+    camera_2_serial: ""
+    camera_2_flip: false
+    camera_2_topic: "/cameras/cam_front/image_raw"
+
+    camera_3_enabled: true
+    camera_3_name: "cam_right"
+    camera_3_serial: ""
+    camera_3_flip: false
+    camera_3_topic: "/cameras/cam_right/image_raw"
