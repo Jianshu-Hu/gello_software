@@ -7,9 +7,9 @@ from typing import Tuple
 import numpy as np
 import tyro
 
-from gello.dynamixel.driver import DynamixelDriver
-
 sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
+
+from gello.dynamixel.driver import DynamixelDriver
 
 MENAGERIE_ROOT: Path = Path(__file__).parent / "third_party" / "mujoco_menagerie"
 

@@ -1,9 +1,13 @@
+import os
+import sys
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Tuple
 
 import numpy as np
 import tyro
+
+sys.path.insert(0, os.path.abspath(os.path.join(os.path.dirname(__file__), "..")))
 
 from gello.dynamixel.driver import DynamixelDriver
 

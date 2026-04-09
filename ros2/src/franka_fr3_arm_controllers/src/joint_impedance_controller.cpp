@@ -57,14 +57,21 @@ controller_interface::return_type JointImpedanceController::update(
 
   if (!motion_generator_initialized_) {
     // After starting the controller we wait for valid joint states from the input topic
-    // Until we get valid joint states we will send zero torques to the robot
-    // to allow the user to reposition the robot
+    // Until we get valid joint states we hold the current robot position to avoid
+    // any drift or motion caused by stale commands or lack of an active teleop source.
     motion_generator_initialized_ = initializeMotionGenerator_();
 
     if (!motion_generator_initialized_) {
-      for (int i = 0; i < num_joints; ++i) {
-        command_interfaces_[i].set_value(0.0);
+      if (!hold_position_initialized_) {
+        hold_position_ = q_;
+        hold_position_initialized_ = true;
       }
+      q_goal = hold_position_;
+      tau_d_calculated = calculateTauDGains_(q_goal);
+      for (int i = 0; i < num_joints; ++i) {
+        command_interfaces_[i].set_value(tau_d_calculated(i));
+      }
+      publishCommandedJointState_(q_goal);
 
       return controller_interface::return_type::OK;
     }
@@ -110,6 +117,13 @@ void JointImpedanceController::jointStateCallback_(const sensor_msgs::msg::Joint
   if (msg.position.size() < gello_position_values_.size()) {
     RCLCPP_WARN(get_node()->get_logger(),
                 "Received joint state size is smaller than expected size.");
+    return;
+  }
+
+  const auto msg_time = rclcpp::Time(msg.header.stamp);
+  if (msg_time < activation_time_) {
+    RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 2000,
+                         "Ignoring stale joint command message published before controller activation");
     return;
   }
 
@@ -192,9 +206,16 @@ CallbackReturn JointImpedanceController::on_configure(
 
 CallbackReturn JointImpedanceController::on_activate(
     const rclcpp_lifecycle::State& /*previous_state*/) {
+  gello_position_values_valid_ = false;
+  gello_position_values_.fill(0.0);
+  move_to_start_position_finished_ = false;
+  motion_generator_initialized_ = false;
+  hold_position_initialized_ = false;
+  motion_generator_.reset();
   last_joint_state_time_ = get_node()->now();
+  activation_time_ = last_joint_state_time_;
   dq_filtered_.setZero();
-  start_time_ = this->get_node()->now();
+  start_time_ = activation_time_;
 
   return CallbackReturn::SUCCESS;
 }
@@ -272,6 +293,13 @@ void JointImpedanceController::updateJointStates_() {
 }
 
 bool JointImpedanceController::initializeMotionGenerator_() {
+  if (!joint_state_subscriber_ || joint_state_subscriber_->get_publisher_count() == 0) {
+    gello_position_values_valid_ = false;
+    RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 10 * 1000,
+                         "Waiting for an active joint command publisher on gello/joint_states...");
+    return false;
+  }
+
   if (!gello_position_values_valid_) {
     // Only send a warning once every 10 seconds in order not to spam the log
     RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 10 * 1000,

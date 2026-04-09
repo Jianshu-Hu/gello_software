@@ -52,9 +52,11 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   Vector7d dq_filtered_;
   Vector7d k_gains_;
   Vector7d d_gains_;
+  Vector7d hold_position_;
   double k_alpha_;
   bool move_to_start_position_finished_{false};
   bool motion_generator_initialized_{false};
+  bool hold_position_initialized_{false};
   rclcpp::Time start_time_;
   std::unique_ptr<MotionGenerator> motion_generator_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscriber_ = nullptr;
@@ -63,6 +65,7 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   bool gello_position_values_valid_ = false;
   std::array<double, 7> gello_position_values_{0, 0, 0, 0, 0, 0, 0};
   rclcpp::Time last_joint_state_time_;
+  rclcpp::Time activation_time_;
   std::array<std::string, 7> joint_names_;
 
   Vector7d calculateTauDGains_(const Vector7d& q_goal);
