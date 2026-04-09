@@ -97,6 +97,7 @@ controller_interface::return_type JointImpedanceController::update(
   for (int i = 0; i < num_joints; ++i) {
     command_interfaces_[i].set_value(tau_d_calculated(i));
   }
+  publishCommandedJointState_(q_goal);
 
   return controller_interface::return_type::OK;
 }
@@ -163,6 +164,9 @@ CallbackReturn JointImpedanceController::on_configure(
   k_alpha_ = k_alpha;
 
   dq_filtered_.setZero();
+  for (int i = 0; i < num_joints; ++i) {
+    joint_names_[i] = arm_id_ + "_joint" + std::to_string(i + 1);
+  }
 
   auto parameters_client =
       std::make_shared<rclcpp::AsyncParametersClient>(get_node(), "robot_state_publisher");
@@ -179,6 +183,9 @@ CallbackReturn JointImpedanceController::on_configure(
   joint_state_subscriber_ = get_node()->create_subscription<sensor_msgs::msg::JointState>(
       "gello/joint_states", 1,
       [this](const sensor_msgs::msg::JointState& msg) { jointStateCallback_(msg); });
+  commanded_joint_state_publisher_ =
+      get_node()->create_publisher<sensor_msgs::msg::JointState>("franka/commanded_joint_states",
+                                                                 10);
 
   return CallbackReturn::SUCCESS;
 }
@@ -198,6 +205,26 @@ auto JointImpedanceController::calculateTauDGains_(const Vector7d& q_goal) -> Ve
   tau_d_calculated = k_gains_.cwiseProduct(q_goal - q_) + d_gains_.cwiseProduct(-dq_filtered_);
 
   return tau_d_calculated;
+}
+
+void JointImpedanceController::publishCommandedJointState_(const Vector7d& q_goal) {
+  if (!commanded_joint_state_publisher_) {
+    return;
+  }
+
+  sensor_msgs::msg::JointState msg;
+  const auto current_time_ns = get_node()->now().nanoseconds();
+  msg.header.stamp.sec = static_cast<int32_t>(current_time_ns / 1000000000LL);
+  msg.header.stamp.nanosec = static_cast<uint32_t>(current_time_ns % 1000000000LL);
+  msg.header.frame_id = arm_id_ + "_link0";
+  msg.name.assign(joint_names_.begin(), joint_names_.end());
+  msg.position.resize(num_joints);
+
+  for (int i = 0; i < num_joints; ++i) {
+    msg.position[i] = q_goal(i);
+  }
+
+  commanded_joint_state_publisher_->publish(msg);
 }
 
 bool JointImpedanceController::validateGains_(const std::vector<double>& gains,

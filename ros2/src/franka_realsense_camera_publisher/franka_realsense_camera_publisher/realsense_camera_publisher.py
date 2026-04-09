@@ -107,7 +107,7 @@ class RealSenseCameraPublisher(Node):
         self.declare_parameter("publish_rate_hz", 30.0)
         self.declare_parameter("frame_id_prefix", "realsense")
 
-        for idx, default_name in enumerate(["cam_left", "cam_front", "cam_right"], start=1):
+        for idx, default_name in enumerate(["cam_left", "cam_right", "cam_front"], start=1):
             self.declare_parameter(f"camera_{idx}_enabled", True)
             self.declare_parameter(f"camera_{idx}_name", default_name)
             self.declare_parameter(f"camera_{idx}_serial", "")

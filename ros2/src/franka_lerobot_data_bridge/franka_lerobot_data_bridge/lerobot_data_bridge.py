@@ -70,6 +70,32 @@ class ImageSample:
 class LeRobotDataBridge(Node):
     """Collect latest ROS 2 robot and camera data and publish samples over ZMQ."""
 
+    _ARM_ACTION_SOURCE_ALIASES = {
+        "topic": "topic",
+        "topic_delta": "topic_delta",
+        "external_topic": "topic",
+        "gello": "topic",
+        "gello_joint_state": "topic",
+        "gello_joint_states": "topic",
+        "q_goal": "topic",
+        "target_joint": "topic",
+        "target_joint_state": "topic",
+        "target_joint_states": "topic",
+        "commanded_joint": "topic",
+        "commanded_joint_state": "topic",
+        "commanded_joint_states": "topic",
+        "delta_joint": "topic_delta",
+        "delta_joint_state": "topic_delta",
+        "delta_joint_states": "topic_delta",
+        "target_delta": "topic_delta",
+        "q_goal_delta": "topic_delta",
+        "robot_state": "robot_state",
+        "franka_state": "robot_state",
+        "franka_joint_state": "robot_state",
+        "franka_joint_states": "robot_state",
+        "robot_delta": "robot_delta",
+    }
+
     def __init__(self) -> None:
         super().__init__("lerobot_data_bridge")
 
@@ -85,6 +111,9 @@ class LeRobotDataBridge(Node):
         self.include_right_arm = bool(self.get_parameter("include_right_arm").value)
         self.require_gripper_freshness = bool(
             self.get_parameter("require_gripper_freshness").value
+        )
+        self.arm_action_source = self._parse_arm_action_source(
+            str(self.get_parameter("arm_action_source").value)
         )
 
         self.left_robot_joint_state_topic = str(
@@ -121,6 +150,10 @@ class LeRobotDataBridge(Node):
         self.latest_arm_action_samples: dict[str, JointSample | None] = {"left": None, "right": None}
         self.latest_robot_gripper_samples: dict[str, JointSample | None] = {"left": None, "right": None}
         self.latest_gripper_action_samples: dict[str, JointSample | None] = {"left": None, "right": None}
+        self.last_published_arm_action_samples: dict[str, JointSample | None] = {
+            "left": None,
+            "right": None,
+        }
         self.latest_camera_samples: list[ImageSample | None] = [None] * len(self.camera_topics)
 
         self._zmq_context = zmq.Context()
@@ -136,12 +169,13 @@ class LeRobotDataBridge(Node):
             lambda msg: self._store_joint_sample(self.latest_robot_arm_samples, "left", msg),
             10,
         )
-        self.create_subscription(
-            JointState,
-            self.left_arm_action_topic,
-            lambda msg: self._store_joint_sample(self.latest_arm_action_samples, "left", msg),
-            10,
-        )
+        if self.arm_action_source in {"topic", "topic_delta"}:
+            self.create_subscription(
+                JointState,
+                self.left_arm_action_topic,
+                lambda msg: self._store_joint_sample(self.latest_arm_action_samples, "left", msg),
+                10,
+            )
 
         if self.include_gripper:
             self.create_subscription(
@@ -164,12 +198,13 @@ class LeRobotDataBridge(Node):
                 lambda msg: self._store_joint_sample(self.latest_robot_arm_samples, "right", msg),
                 10,
             )
-            self.create_subscription(
-                JointState,
-                self.right_arm_action_topic,
-                lambda msg: self._store_joint_sample(self.latest_arm_action_samples, "right", msg),
-                10,
-            )
+            if self.arm_action_source in {"topic", "topic_delta"}:
+                self.create_subscription(
+                    JointState,
+                    self.right_arm_action_topic,
+                    lambda msg: self._store_joint_sample(self.latest_arm_action_samples, "right", msg),
+                    10,
+                )
 
             if self.include_gripper:
                 self.create_subscription(
@@ -199,6 +234,7 @@ class LeRobotDataBridge(Node):
         self.get_logger().info(
             f"Publishing LeRobot samples over ZMQ on tcp://{self.publish_host}:{self.publish_port}"
         )
+        self.get_logger().info(f"Arm action source mode: {self.arm_action_source}")
 
     def _declare_parameters(self) -> None:
         self.declare_parameter("sample_rate_hz", 15.0)
@@ -210,9 +246,10 @@ class LeRobotDataBridge(Node):
         self.declare_parameter("include_gripper", True)
         self.declare_parameter("include_right_arm", True)
         self.declare_parameter("require_gripper_freshness", False)
+        self.declare_parameter("arm_action_source", "topic")
 
         self.declare_parameter("left_robot_joint_state_topic", "/left/franka/joint_states")
-        self.declare_parameter("left_arm_action_topic", "/left/gello/joint_states")
+        self.declare_parameter("left_arm_action_topic", "/left/franka/commanded_joint_states")
         self.declare_parameter(
             "left_robot_gripper_state_topic", "/left/franka_gripper/joint_states"
         )
@@ -222,7 +259,7 @@ class LeRobotDataBridge(Node):
         )
 
         self.declare_parameter("right_robot_joint_state_topic", "/right/franka/joint_states")
-        self.declare_parameter("right_arm_action_topic", "/right/gello/joint_states")
+        self.declare_parameter("right_arm_action_topic", "/right/franka/commanded_joint_states")
         self.declare_parameter(
             "right_robot_gripper_state_topic", "/right/franka_gripper/joint_states"
         )
@@ -238,6 +275,15 @@ class LeRobotDataBridge(Node):
 
     def _required_arms(self) -> list[str]:
         return ["left", "right"] if self.include_right_arm else ["left"]
+
+    def _parse_arm_action_source(self, source: str) -> str:
+        normalized_source = source.strip().lower()
+        if normalized_source not in self._ARM_ACTION_SOURCE_ALIASES:
+            supported_sources = ", ".join(sorted(self._ARM_ACTION_SOURCE_ALIASES))
+            raise ValueError(
+                f"Unsupported arm_action_source '{source}'. Supported values: {supported_sources}."
+            )
+        return self._ARM_ACTION_SOURCE_ALIASES[normalized_source]
 
     def _store_joint_sample(
         self, storage: dict[str, JointSample | None], arm_name: str, msg: JointState
@@ -279,11 +325,41 @@ class LeRobotDataBridge(Node):
             width=msg.width,
         )
 
+    def _arm_action_sample(self, arm_name: str) -> JointSample | None:
+        if self.arm_action_source in {"topic", "topic_delta"}:
+            return self.latest_arm_action_samples[arm_name]
+        return self.latest_robot_arm_samples[arm_name]
+
+    def _arm_action_values(self, arm_name: str) -> list[float]:
+        if self.arm_action_source == "topic":
+            sample = self.latest_arm_action_samples[arm_name]
+            if sample is None:
+                return []
+            return list(sample.values)
+
+        source_sample = self._arm_action_sample(arm_name)
+        if source_sample is None:
+            return []
+
+        if self.arm_action_source == "robot_state":
+            return list(source_sample.values)
+
+        previous_sample = self.last_published_arm_action_samples[arm_name]
+        if previous_sample is None:
+            return [0.0] * len(source_sample.values)
+
+        return [
+            current_value - previous_value
+            for current_value, previous_value in zip(
+                source_sample.values, previous_sample.values, strict=True
+            )
+        ]
+
     def _sample_is_ready(self) -> tuple[bool, str]:
         for arm_name in self._required_arms():
             if self.latest_robot_arm_samples[arm_name] is None:
                 return False, f"waiting for {arm_name} robot joint states"
-            if self.latest_arm_action_samples[arm_name] is None:
+            if self._arm_action_sample(arm_name) is None:
                 return False, f"waiting for {arm_name} action joint states"
             if self.include_gripper and self.latest_robot_gripper_samples[arm_name] is None:
                 return False, f"waiting for {arm_name} robot gripper states"
@@ -303,7 +379,10 @@ class LeRobotDataBridge(Node):
         for arm_name in self._required_arms():
             if reference_time_s - self.latest_robot_arm_samples[arm_name].stamp_s > self.max_data_age_sec:
                 stale_sources.append(f"{arm_name} robot joint states")
-            if reference_time_s - self.latest_arm_action_samples[arm_name].stamp_s > self.max_data_age_sec:
+            arm_action_sample = self._arm_action_sample(arm_name)
+            if arm_action_sample is not None and (
+                reference_time_s - arm_action_sample.stamp_s > self.max_data_age_sec
+            ):
                 stale_sources.append(f"{arm_name} action joint states")
             if self.include_gripper and self.require_gripper_freshness:
                 if (
@@ -342,7 +421,7 @@ class LeRobotDataBridge(Node):
         action: list[float] = []
         for arm_name in self._required_arms():
             robot_state.extend(self.latest_robot_arm_samples[arm_name].values)
-            action.extend(self.latest_arm_action_samples[arm_name].values)
+            action.extend(self._arm_action_values(arm_name))
             if self.include_gripper:
                 robot_state.extend(self.latest_robot_gripper_samples[arm_name].values)
                 action.extend(self.latest_gripper_action_samples[arm_name].values)
@@ -369,6 +448,15 @@ class LeRobotDataBridge(Node):
             "include_gripper": self.include_gripper,
         }
         self._socket.send_pyobj(packet)
+
+        for arm_name in self._required_arms():
+            action_sample = self._arm_action_sample(arm_name)
+            if action_sample is None:
+                continue
+            self.last_published_arm_action_samples[arm_name] = JointSample(
+                values=list(action_sample.values),
+                stamp_s=action_sample.stamp_s,
+            )
 
     def destroy_node(self) -> bool:
         self._socket.close(0)

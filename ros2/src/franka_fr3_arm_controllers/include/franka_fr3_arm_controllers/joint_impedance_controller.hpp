@@ -14,6 +14,7 @@
 
 #pragma once
 
+#include <array>
 #include <Eigen/Eigen>
 #include <controller_interface/controller_interface.hpp>
 #include <rclcpp/rclcpp.hpp>
@@ -57,13 +58,17 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   rclcpp::Time start_time_;
   std::unique_ptr<MotionGenerator> motion_generator_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscriber_ = nullptr;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr commanded_joint_state_publisher_ =
+      nullptr;
   bool gello_position_values_valid_ = false;
   std::array<double, 7> gello_position_values_{0, 0, 0, 0, 0, 0, 0};
   rclcpp::Time last_joint_state_time_;
+  std::array<std::string, 7> joint_names_;
 
   Vector7d calculateTauDGains_(const Vector7d& q_goal);
   bool validateGains_(const std::vector<double>& gains, const std::string& gains_name);
   bool initializeMotionGenerator_();
+  void publishCommandedJointState_(const Vector7d& q_goal);
   void updateJointStates_();
   void validateGelloPositions_(const sensor_msgs::msg::JointState& msg);
   void jointStateCallback_(const sensor_msgs::msg::JointState msg);
