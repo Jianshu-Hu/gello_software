@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import re
 from dataclasses import dataclass
 from typing import Any
 
@@ -285,11 +286,37 @@ class LeRobotDataBridge(Node):
             )
         return self._ARM_ACTION_SOURCE_ALIASES[normalized_source]
 
+    def _extract_ordered_arm_joint_values(self, msg: JointState) -> list[float]:
+        expected_size = 7
+        if len(msg.position) < expected_size:
+            return [float(value) for value in msg.position]
+
+        if len(msg.name) < expected_size:
+            return [float(value) for value in msg.position[:expected_size]]
+
+        ordered_values: list[float | None] = [None] * expected_size
+        for joint_name, joint_value in zip(msg.name, msg.position, strict=True):
+            match = re.search(r"(\d+)$", joint_name)
+            if match is None:
+                continue
+            joint_index = int(match.group(1)) - 1
+            if 0 <= joint_index < expected_size:
+                ordered_values[joint_index] = float(joint_value)
+
+        if all(value is not None for value in ordered_values):
+            return [float(value) for value in ordered_values]
+
+        self.get_logger().warning(
+            "Could not fully reorder JointState by joint name suffix. "
+            "Falling back to raw position order for this sample."
+        )
+        return [float(value) for value in msg.position[:expected_size]]
+
     def _store_joint_sample(
         self, storage: dict[str, JointSample | None], arm_name: str, msg: JointState
     ) -> None:
         storage[arm_name] = JointSample(
-            values=[float(value) for value in msg.position],
+            values=self._extract_ordered_arm_joint_values(msg),
             stamp_s=_stamp_to_float_seconds(msg.header.stamp.sec, msg.header.stamp.nanosec),
         )
 
@@ -354,6 +381,14 @@ class LeRobotDataBridge(Node):
                 source_sample.values, previous_sample.values, strict=True
             )
         ]
+
+    def _arm_action_representation(self) -> str:
+        if self.arm_action_source in {"topic_delta", "robot_delta"}:
+            return "delta_joint_position"
+        return "absolute_joint_position"
+
+    def _gripper_action_representation(self) -> str:
+        return "absolute_width"
 
     def _sample_is_ready(self) -> tuple[bool, str]:
         for arm_name in self._required_arms():
@@ -440,6 +475,8 @@ class LeRobotDataBridge(Node):
             "task": self.task_name,
             "state": robot_state,
             "action": action,
+            "arm_action_representation": self._arm_action_representation(),
+            "gripper_action_representation": self._gripper_action_representation(),
             "camera_names": self.camera_names,
             "cameras": camera_payload,
             "robot_state_dim": len(robot_state),
