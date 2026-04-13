@@ -7,7 +7,7 @@ lerobot_data_bridge:
     task_name: "franka_gello_single_arm_teleop"
     include_gripper: true
     include_right_arm: false
-    arm_action_source: "topic"
+    arm_action_source: "robot_state"
 
     left_robot_joint_state_topic: "/left/franka/joint_states"
     left_arm_action_topic: "/left/franka/commanded_joint_states"

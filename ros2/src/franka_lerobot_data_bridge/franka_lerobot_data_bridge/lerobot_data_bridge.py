@@ -113,6 +113,12 @@ class LeRobotDataBridge(Node):
         self.require_gripper_freshness = bool(
             self.get_parameter("require_gripper_freshness").value
         )
+        self.gripper_binary_open_threshold = float(
+            self.get_parameter("gripper_binary_open_threshold").value
+        )
+        self.gripper_binary_close_threshold = float(
+            self.get_parameter("gripper_binary_close_threshold").value
+        )
         self.arm_action_source = self._parse_arm_action_source(
             str(self.get_parameter("arm_action_source").value)
         )
@@ -151,6 +157,7 @@ class LeRobotDataBridge(Node):
         self.latest_arm_action_samples: dict[str, JointSample | None] = {"left": None, "right": None}
         self.latest_robot_gripper_samples: dict[str, JointSample | None] = {"left": None, "right": None}
         self.latest_gripper_action_samples: dict[str, JointSample | None] = {"left": None, "right": None}
+        self.latched_gripper_action_values: dict[str, float | None] = {"left": None, "right": None}
         self.last_published_arm_action_samples: dict[str, JointSample | None] = {
             "left": None,
             "right": None,
@@ -188,7 +195,7 @@ class LeRobotDataBridge(Node):
             self.create_subscription(
                 Float32,
                 self.left_gripper_action_topic,
-                lambda msg: self._store_float_sample(self.latest_gripper_action_samples, "left", msg),
+                lambda msg: self._store_gripper_action_sample("left", msg),
                 10,
             )
 
@@ -217,9 +224,7 @@ class LeRobotDataBridge(Node):
                 self.create_subscription(
                     Float32,
                     self.right_gripper_action_topic,
-                    lambda msg: self._store_float_sample(
-                        self.latest_gripper_action_samples, "right", msg
-                    ),
+                    lambda msg: self._store_gripper_action_sample("right", msg),
                     10,
                 )
 
@@ -247,7 +252,9 @@ class LeRobotDataBridge(Node):
         self.declare_parameter("include_gripper", True)
         self.declare_parameter("include_right_arm", True)
         self.declare_parameter("require_gripper_freshness", False)
-        self.declare_parameter("arm_action_source", "topic")
+        self.declare_parameter("gripper_binary_open_threshold", 0.6)
+        self.declare_parameter("gripper_binary_close_threshold", 0.4)
+        self.declare_parameter("arm_action_source", "robot_state")
 
         self.declare_parameter("left_robot_joint_state_topic", "/left/franka/joint_states")
         self.declare_parameter("left_arm_action_topic", "/left/franka/commanded_joint_states")
@@ -320,12 +327,20 @@ class LeRobotDataBridge(Node):
             stamp_s=_stamp_to_float_seconds(msg.header.stamp.sec, msg.header.stamp.nanosec),
         )
 
-    def _store_float_sample(
-        self, storage: dict[str, JointSample | None], arm_name: str, msg: Float32
-    ) -> None:
+    def _store_gripper_action_sample(self, arm_name: str, msg: Float32) -> None:
         now = self.get_clock().now().to_msg()
-        storage[arm_name] = JointSample(
-            values=[float(msg.data)],
+        command_value = float(msg.data)
+        latched_value = self.latched_gripper_action_values[arm_name]
+        if latched_value is None:
+            latched_value = 1.0 if command_value >= 0.5 else 0.0
+        elif command_value >= self.gripper_binary_open_threshold:
+            latched_value = 1.0
+        elif command_value <= self.gripper_binary_close_threshold:
+            latched_value = 0.0
+
+        self.latched_gripper_action_values[arm_name] = latched_value
+        self.latest_gripper_action_samples[arm_name] = JointSample(
+            values=[latched_value],
             stamp_s=_stamp_to_float_seconds(now.sec, now.nanosec),
         )
 
@@ -388,7 +403,7 @@ class LeRobotDataBridge(Node):
         return "absolute_joint_position"
 
     def _gripper_action_representation(self) -> str:
-        return "absolute_width"
+        return "binary_open_close"
 
     def _sample_is_ready(self) -> tuple[bool, str]:
         for arm_name in self._required_arms():
