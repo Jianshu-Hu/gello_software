@@ -18,6 +18,15 @@ class GelloPublisher(Node):
     def __init__(self) -> None:
         super().__init__("gello_publisher")
         self.PUBLISHING_RATE = 25  # Hz
+        self.declare_parameter("gripper_binary_open_threshold", 0.6)
+        self.declare_parameter("gripper_binary_close_threshold", 0.4)
+        self.gripper_binary_open_threshold = float(
+            self.get_parameter("gripper_binary_open_threshold").value
+        )
+        self.gripper_binary_close_threshold = float(
+            self.get_parameter("gripper_binary_close_threshold").value
+        )
+        self._latched_gripper_command: float | None = None
 
         hardware_params: GelloHardwareParams = self._setup_hardware_parameters()
 
@@ -52,6 +61,16 @@ class GelloPublisher(Node):
             param_value = parameter_value_to_python(param.value)
             self.gello_hardware.update_dynamixel_control_parameter(param.name, param_value)
 
+    def _binary_gripper_command(self, gripper_position: float) -> float:
+        if self._latched_gripper_command is None:
+            self._latched_gripper_command = 1.0 if gripper_position >= 0.5 else 0.0
+        elif gripper_position >= self.gripper_binary_open_threshold:
+            self._latched_gripper_command = 1.0
+        elif gripper_position <= self.gripper_binary_close_threshold:
+            self._latched_gripper_command = 0.0
+
+        return self._latched_gripper_command
+
     def publish_joint_jog(self) -> None:
         """Publish current joint states and gripper position."""
         JOINT_NAMES = [
@@ -72,7 +91,7 @@ class GelloPublisher(Node):
         arm_joint_states.position = gello_arm_joints.tolist()
 
         gripper_joint_states = Float32()
-        gripper_joint_states.data = gripper_position
+        gripper_joint_states.data = self._binary_gripper_command(gripper_position)
         self.arm_joint_publisher.publish(arm_joint_states)
         self.gripper_joint_publisher.publish(gripper_joint_states)
 
