@@ -12,6 +12,11 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Float32
 
+try:
+    import pylibfranka
+except ModuleNotFoundError:  # pragma: no cover - depends on robot computer env
+    pylibfranka = None
+
 
 def _stamp_to_float_seconds(sec: int, nanosec: int) -> float:
     return float(sec) + (float(nanosec) * 1e-9)
@@ -107,6 +112,12 @@ class LeRobotDataBridge(Node):
         self.publish_host = str(self.get_parameter("publish_host").value)
         self.publish_port = int(self.get_parameter("publish_port").value)
         self.task_name = str(self.get_parameter("task_name").value)
+        self.deployment_mode = bool(self.get_parameter("deployment_mode").value)
+        self.deployment_gripper_action_value = float(
+            self.get_parameter("deployment_gripper_action_value").value
+        )
+        self.left_robot_ip = str(self.get_parameter("left_robot_ip").value)
+        self.right_robot_ip = str(self.get_parameter("right_robot_ip").value)
 
         self.include_gripper = bool(self.get_parameter("include_gripper").value)
         self.include_right_arm = bool(self.get_parameter("include_right_arm").value)
@@ -156,6 +167,9 @@ class LeRobotDataBridge(Node):
             "right": None,
         }
         self.latest_camera_samples: list[ImageSample | None] = [None] * len(self.camera_topics)
+        self._deployment_robots: dict[str, Any] = {}
+        self._deployment_grippers: dict[str, Any] = {}
+        self._last_deployment_warning_time_s: dict[str, float] = {}
 
         self._zmq_context = zmq.Context()
         self._socket = self._zmq_context.socket(zmq.PUB)
@@ -164,6 +178,70 @@ class LeRobotDataBridge(Node):
         self._last_wait_reason: str | None = None
         self._last_wait_reason_log_time_s = 0.0
 
+        if self.deployment_mode:
+            self._initialize_deployment_clients()
+        else:
+            self._create_live_state_subscriptions()
+
+        for idx, topic in enumerate(self.camera_topics):
+            self.create_subscription(
+                Image,
+                topic,
+                lambda msg, camera_index=idx: self._on_camera_image(camera_index, msg),
+                10,
+            )
+
+        self.timer = self.create_timer(1.0 / self.sample_rate_hz, self._publish_sample)
+        self.get_logger().info(
+            f"Publishing LeRobot samples over ZMQ on tcp://{self.publish_host}:{self.publish_port}"
+        )
+        if self.deployment_mode:
+            self.get_logger().info("Deployment mode enabled: reading Franka state via pylibfranka.")
+        else:
+            self.get_logger().info(f"Arm action source mode: {self.arm_action_source}")
+
+    def _declare_parameters(self) -> None:
+        self.declare_parameter("sample_rate_hz", 15.0)
+        self.declare_parameter("max_data_age_sec", 0.5)
+        self.declare_parameter("publish_host", "127.0.0.1")
+        self.declare_parameter("publish_port", 5555)
+        self.declare_parameter("task_name", "franka_gello_teleop")
+        self.declare_parameter("deployment_mode", False)
+        self.declare_parameter("deployment_gripper_action_value", 0.0)
+        self.declare_parameter("left_robot_ip", "172.16.0.3")
+        self.declare_parameter("right_robot_ip", "172.16.0.2")
+
+        self.declare_parameter("include_gripper", True)
+        self.declare_parameter("include_right_arm", True)
+        self.declare_parameter("require_gripper_freshness", False)
+        self.declare_parameter("arm_action_source", "robot_state")
+
+        self.declare_parameter("left_robot_joint_state_topic", "/left/franka/joint_states")
+        self.declare_parameter("left_arm_action_topic", "/left/franka/commanded_joint_states")
+        self.declare_parameter(
+            "left_robot_gripper_state_topic", "/left/franka_gripper/joint_states"
+        )
+        self.declare_parameter(
+            "left_gripper_action_topic",
+            "/left/gripper/gripper_client/target_gripper_width_percent",
+        )
+
+        self.declare_parameter("right_robot_joint_state_topic", "/right/franka/joint_states")
+        self.declare_parameter("right_arm_action_topic", "/right/franka/commanded_joint_states")
+        self.declare_parameter(
+            "right_robot_gripper_state_topic", "/right/franka_gripper/joint_states"
+        )
+        self.declare_parameter(
+            "right_gripper_action_topic",
+            "/right/gripper/gripper_client/target_gripper_width_percent",
+        )
+
+        for idx, default_name in enumerate(["cam_left", "cam_front", "cam_right"], start=1):
+            self.declare_parameter(f"camera_{idx}_enabled", True)
+            self.declare_parameter(f"camera_{idx}_name", default_name)
+            self.declare_parameter(f"camera_{idx}_topic", f"/cameras/{default_name}/image_raw")
+
+    def _create_live_state_subscriptions(self) -> None:
         self.create_subscription(
             JointState,
             self.left_robot_joint_state_topic,
@@ -221,59 +299,42 @@ class LeRobotDataBridge(Node):
                     10,
                 )
 
-        for idx, topic in enumerate(self.camera_topics):
-            self.create_subscription(
-                Image,
-                topic,
-                lambda msg, camera_index=idx: self._on_camera_image(camera_index, msg),
-                10,
+    def _initialize_deployment_clients(self) -> None:
+        if pylibfranka is None:
+            raise RuntimeError(
+                "deployment_mode requires pylibfranka in the ROS 2 Python environment."
             )
 
-        self.timer = self.create_timer(1.0 / self.sample_rate_hz, self._publish_sample)
-        self.get_logger().info(
-            f"Publishing LeRobot samples over ZMQ on tcp://{self.publish_host}:{self.publish_port}"
-        )
-        self.get_logger().info(f"Arm action source mode: {self.arm_action_source}")
+        arm_ips = {"left": self.left_robot_ip, "right": self.right_robot_ip}
+        for arm_name in self._required_arms():
+            robot_ip = arm_ips[arm_name]
+            try:
+                self._deployment_robots[arm_name] = pylibfranka.Robot(robot_ip)
+            except Exception as exc:
+                raise RuntimeError(
+                    f"Failed to connect to {arm_name} Franka robot at {robot_ip}: {exc}"
+                ) from exc
 
-    def _declare_parameters(self) -> None:
-        self.declare_parameter("sample_rate_hz", 15.0)
-        self.declare_parameter("max_data_age_sec", 0.5)
-        self.declare_parameter("publish_host", "127.0.0.1")
-        self.declare_parameter("publish_port", 5555)
-        self.declare_parameter("task_name", "franka_gello_teleop")
-
-        self.declare_parameter("include_gripper", True)
-        self.declare_parameter("include_right_arm", True)
-        self.declare_parameter("require_gripper_freshness", False)
-        self.declare_parameter("arm_action_source", "robot_state")
-
-        self.declare_parameter("left_robot_joint_state_topic", "/left/franka/joint_states")
-        self.declare_parameter("left_arm_action_topic", "/left/franka/commanded_joint_states")
-        self.declare_parameter(
-            "left_robot_gripper_state_topic", "/left/franka_gripper/joint_states"
-        )
-        self.declare_parameter(
-            "left_gripper_action_topic",
-            "/left/gripper/gripper_client/target_gripper_width_percent",
-        )
-
-        self.declare_parameter("right_robot_joint_state_topic", "/right/franka/joint_states")
-        self.declare_parameter("right_arm_action_topic", "/right/franka/commanded_joint_states")
-        self.declare_parameter(
-            "right_robot_gripper_state_topic", "/right/franka_gripper/joint_states"
-        )
-        self.declare_parameter(
-            "right_gripper_action_topic",
-            "/right/gripper/gripper_client/target_gripper_width_percent",
-        )
-
-        for idx, default_name in enumerate(["cam_left", "cam_front", "cam_right"], start=1):
-            self.declare_parameter(f"camera_{idx}_enabled", True)
-            self.declare_parameter(f"camera_{idx}_name", default_name)
-            self.declare_parameter(f"camera_{idx}_topic", f"/cameras/{default_name}/image_raw")
+            if self.include_gripper:
+                try:
+                    self._deployment_grippers[arm_name] = pylibfranka.Gripper(robot_ip)
+                except Exception as exc:
+                    raise RuntimeError(
+                        f"Failed to connect to {arm_name} Franka gripper at {robot_ip}: {exc}"
+                    ) from exc
 
     def _required_arms(self) -> list[str]:
         return ["left", "right"] if self.include_right_arm else ["left"]
+
+    def _now_s(self) -> float:
+        return self.get_clock().now().nanoseconds * 1e-9
+
+    def _log_deployment_warning(self, key: str, message: str) -> None:
+        now_s = self._now_s()
+        last_log_time_s = self._last_deployment_warning_time_s.get(key, 0.0)
+        if (now_s - last_log_time_s) > 5.0:
+            self.get_logger().warning(message)
+            self._last_deployment_warning_time_s[key] = now_s
 
     def _parse_arm_action_source(self, source: str) -> str:
         normalized_source = source.strip().lower()
@@ -348,6 +409,42 @@ class LeRobotDataBridge(Node):
             width=msg.width,
         )
 
+    def _refresh_deployment_samples(self) -> None:
+        arm_ips = {"left": self.left_robot_ip, "right": self.right_robot_ip}
+        for arm_name in self._required_arms():
+            robot = self._deployment_robots.get(arm_name)
+            if robot is None:
+                continue
+            try:
+                state = robot.read_once()
+                self.latest_robot_arm_samples[arm_name] = JointSample(
+                    values=[float(value) for value in np.asarray(state.q, dtype=float)[:7]],
+                    stamp_s=self._now_s(),
+                )
+            except Exception as exc:
+                self._log_deployment_warning(
+                    f"{arm_name}_robot",
+                    f"Failed to read {arm_name} robot state from {arm_ips[arm_name]}: {exc}",
+                )
+
+            if not self.include_gripper:
+                continue
+
+            gripper = self._deployment_grippers.get(arm_name)
+            if gripper is None:
+                continue
+            try:
+                state = gripper.read_once()
+                self.latest_robot_gripper_samples[arm_name] = JointSample(
+                    values=[float(state.width)],
+                    stamp_s=self._now_s(),
+                )
+            except Exception as exc:
+                self._log_deployment_warning(
+                    f"{arm_name}_gripper",
+                    f"Failed to read {arm_name} gripper state from {arm_ips[arm_name]}: {exc}",
+                )
+
     def _arm_action_sample(self, arm_name: str) -> JointSample | None:
         if self.arm_action_source in {"topic", "topic_delta"}:
             return self.latest_arm_action_samples[arm_name]
@@ -378,7 +475,15 @@ class LeRobotDataBridge(Node):
             )
         ]
 
+    def _deployment_arm_action_values(self, arm_name: str) -> list[float]:
+        sample = self.latest_robot_arm_samples[arm_name]
+        if sample is None:
+            return []
+        return [0.0] * len(sample.values)
+
     def _arm_action_representation(self) -> str:
+        if self.deployment_mode:
+            return "delta_joint_position"
         if self.arm_action_source in {"topic_delta", "robot_delta"}:
             return "delta_joint_position"
         return "absolute_joint_position"
@@ -390,11 +495,15 @@ class LeRobotDataBridge(Node):
         for arm_name in self._required_arms():
             if self.latest_robot_arm_samples[arm_name] is None:
                 return False, f"waiting for {arm_name} robot joint states"
-            if self._arm_action_sample(arm_name) is None:
+            if not self.deployment_mode and self._arm_action_sample(arm_name) is None:
                 return False, f"waiting for {arm_name} action joint states"
             if self.include_gripper and self.latest_robot_gripper_samples[arm_name] is None:
                 return False, f"waiting for {arm_name} robot gripper states"
-            if self.include_gripper and self.latest_gripper_action_samples[arm_name] is None:
+            if (
+                self.include_gripper
+                and not self.deployment_mode
+                and self.latest_gripper_action_samples[arm_name] is None
+            ):
                 return False, f"waiting for {arm_name} gripper action"
 
         missing_cameras = [
@@ -410,20 +519,25 @@ class LeRobotDataBridge(Node):
         for arm_name in self._required_arms():
             if reference_time_s - self.latest_robot_arm_samples[arm_name].stamp_s > self.max_data_age_sec:
                 stale_sources.append(f"{arm_name} robot joint states")
-            arm_action_sample = self._arm_action_sample(arm_name)
-            if arm_action_sample is not None and (
-                reference_time_s - arm_action_sample.stamp_s > self.max_data_age_sec
-            ):
-                stale_sources.append(f"{arm_name} action joint states")
-            if self.include_gripper and self.require_gripper_freshness:
+            if not self.deployment_mode:
+                arm_action_sample = self._arm_action_sample(arm_name)
+                if arm_action_sample is not None and (
+                    reference_time_s - arm_action_sample.stamp_s > self.max_data_age_sec
+                ):
+                    stale_sources.append(f"{arm_name} action joint states")
+            if self.include_gripper and (self.require_gripper_freshness or self.deployment_mode):
                 if (
                     reference_time_s - self.latest_robot_gripper_samples[arm_name].stamp_s
                     > self.max_data_age_sec
                 ):
                     stale_sources.append(f"{arm_name} robot gripper states")
                 if (
+                    not self.deployment_mode
+                    and self.latest_gripper_action_samples[arm_name] is not None
+                    and (
                     reference_time_s - self.latest_gripper_action_samples[arm_name].stamp_s
                     > self.max_data_age_sec
+                    )
                 ):
                     stale_sources.append(f"{arm_name} gripper action")
 
@@ -437,6 +551,9 @@ class LeRobotDataBridge(Node):
         return True, ""
 
     def _publish_sample(self) -> None:
+        if self.deployment_mode:
+            self._refresh_deployment_samples()
+
         ready, reason = self._sample_is_ready()
         if not ready:
             now_s = self.get_clock().now().nanoseconds * 1e-9
@@ -452,10 +569,16 @@ class LeRobotDataBridge(Node):
         action: list[float] = []
         for arm_name in self._required_arms():
             robot_state.extend(self.latest_robot_arm_samples[arm_name].values)
-            action.extend(self._arm_action_values(arm_name))
+            if self.deployment_mode:
+                action.extend(self._deployment_arm_action_values(arm_name))
+            else:
+                action.extend(self._arm_action_values(arm_name))
             if self.include_gripper:
                 robot_state.extend(self.latest_robot_gripper_samples[arm_name].values)
-                action.extend(self.latest_gripper_action_samples[arm_name].values)
+                if self.deployment_mode:
+                    action.append(self.deployment_gripper_action_value)
+                else:
+                    action.extend(self.latest_gripper_action_samples[arm_name].values)
 
         camera_payload = {}
         for name, sample in zip(self.camera_names, self.latest_camera_samples, strict=True):
@@ -481,6 +604,9 @@ class LeRobotDataBridge(Node):
             "include_gripper": self.include_gripper,
         }
         self._socket.send_pyobj(packet)
+
+        if self.deployment_mode:
+            return
 
         for arm_name in self._required_arms():
             action_sample = self._arm_action_sample(arm_name)

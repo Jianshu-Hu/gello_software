@@ -2,8 +2,8 @@ realsense_camera_publisher:
   ros__parameters:
     width: 640
     height: 480
-    camera_fps: 30
-    publish_rate_hz: 30.0
+    camera_fps: 15
+    publish_rate_hz: 15.0
     frame_id_prefix: "realsense"
 
     camera_1_enabled: true
