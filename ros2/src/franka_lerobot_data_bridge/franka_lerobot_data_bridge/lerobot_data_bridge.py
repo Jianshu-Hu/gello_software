@@ -8,6 +8,7 @@ from typing import Any
 import numpy as np
 import rclpy
 import zmq
+from controller_manager_msgs.srv import SwitchController
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import Image, JointState
@@ -216,9 +217,12 @@ class LeRobotDataBridge(Node):
         self._deployment_command_active = False
         self._deployment_active = self.deployment_start_active
         self._deployment_controller_enabled = False
+        self._deployment_controller_target_enabled: bool | None = None
+        self._deployment_controller_transition_futures: list[tuple[str, Any, Any]] = []
         self._deployment_joint_command_publishers: dict[str, Any] = {}
         self._deployment_gripper_command_publishers: dict[str, Any] = {}
         self._deployment_enable_clients: dict[str, Any] = {}
+        self._deployment_switch_clients: dict[str, Any] = {}
         self._last_published_gripper_command: dict[str, float | None] = {"left": None, "right": None}
         self._activation_service = None
 
@@ -438,13 +442,106 @@ class LeRobotDataBridge(Node):
             "left": self.left_deployment_enable_service,
             "right": self.right_deployment_enable_service,
         }
+        controller_manager_services = {
+            "left": "/left/controller_manager/switch_controller",
+            "right": "/right/controller_manager/switch_controller",
+        }
         for arm_name in self._required_arms():
             self._deployment_enable_clients[arm_name] = self.create_client(
                 SetBool, enable_services[arm_name]
             )
+            self._deployment_switch_clients[arm_name] = self.create_client(
+                SwitchController, controller_manager_services[arm_name]
+            )
 
         self.get_logger().info(
             f"Deployment command bridge listening on tcp://{self.command_host}:{self.command_port}"
+        )
+
+    def _set_joint_impedance_controller_active(self, active: bool) -> bool:
+        if self._deployment_controller_target_enabled is not None:
+            return False
+
+        clients: dict[str, Any] = {}
+        success = True
+        for arm_name in self._required_arms():
+            client = self._deployment_switch_clients.get(arm_name)
+            if client is None:
+                continue
+            if not client.wait_for_service(timeout_sec=0.2):
+                self._log_deployment_warning(
+                    f"{arm_name}_controller_manager_missing",
+                    f"Controller manager switch service for {arm_name} arm is not available yet.",
+                )
+                success = False
+                continue
+            clients[arm_name] = client
+
+        if not success:
+            return False
+
+        futures: list[tuple[str, Any, Any]] = []
+        for arm_name, client in clients.items():
+            request = SwitchController.Request()
+            if active:
+                request.activate_controllers = ["joint_impedance_controller"]
+                request.deactivate_controllers = []
+            else:
+                request.activate_controllers = []
+                request.deactivate_controllers = ["joint_impedance_controller"]
+            request.strictness = SwitchController.Request.STRICT
+            request.activate_asap = True
+            futures.append((arm_name, client.srv_name, client.call_async(request)))
+
+        self._deployment_controller_transition_futures.extend(futures)
+        return True
+
+    def _process_pending_deployment_controller_transition(self) -> None:
+        if self._deployment_controller_target_enabled is None:
+            return
+
+        if any(not future.done() for _, _, future in self._deployment_controller_transition_futures):
+            return
+
+        target_enabled = self._deployment_controller_target_enabled
+        success = True
+        for arm_name, service_name, future in self._deployment_controller_transition_futures:
+            try:
+                response = future.result()
+            except Exception as exc:
+                self._log_deployment_warning(
+                    f"{arm_name}_transition_exception",
+                    f"Deployment controller transition via {service_name} failed for {arm_name}: {exc}",
+                )
+                success = False
+                continue
+
+            if hasattr(response, "ok") and not response.ok:
+                self._log_deployment_warning(
+                    f"{arm_name}_transition_rejected",
+                    f"Controller manager rejected deployment controller transition for {arm_name}.",
+                )
+                success = False
+                continue
+
+            if hasattr(response, "success") and not response.success:
+                message = getattr(response, "message", "")
+                suffix = f" ({message})" if message else ""
+                self._log_deployment_warning(
+                    f"{arm_name}_deployment_toggle_rejected",
+                    f"Deployment enable service rejected request for {arm_name}{suffix}.",
+                )
+                success = False
+
+        self._deployment_controller_transition_futures.clear()
+        self._deployment_controller_target_enabled = None
+
+        if not success:
+            return
+
+        self._deployment_controller_enabled = target_enabled
+        self.get_logger().info(
+            "Deployment controllers " + ("enabled." if target_enabled else "disabled.")
         )
 
     def _required_arms(self) -> list[str]:
@@ -597,7 +694,8 @@ class LeRobotDataBridge(Node):
                 if not self._deployment_active:
                     continue
                 if not self._deployment_command_active and self._command_has_payload(command):
-                    if self._set_deployment_controller_enabled(True):
+                    self._set_deployment_controller_enabled(True)
+                    if self._deployment_controller_enabled:
                         self._deployment_command_active = True
                         self.get_logger().info(
                             "Received first deployment command packet; enabling ROS2 command publishing."
@@ -622,10 +720,22 @@ class LeRobotDataBridge(Node):
         return msg
 
     def _set_deployment_controller_enabled(self, enabled: bool) -> bool:
+        self._process_pending_deployment_controller_transition()
+
         if self._deployment_controller_enabled == enabled:
             return True
+        if self._deployment_controller_target_enabled == enabled:
+            return False
+        if self._deployment_controller_target_enabled is not None:
+            return False
 
         success = True
+        enable_clients: dict[str, Any] = {}
+        futures: list[tuple[str, Any, Any]] = []
+
+        if enabled and not self._set_joint_impedance_controller_active(True):
+            success = False
+
         for arm_name in self._required_arms():
             client = self._deployment_enable_clients.get(arm_name)
             if client is None:
@@ -637,16 +747,25 @@ class LeRobotDataBridge(Node):
                 )
                 success = False
                 continue
+            enable_clients[arm_name] = client
+
+        if not enabled and not self._set_joint_impedance_controller_active(False):
+            success = False
+
+        if not success:
+            return False
+
+        for arm_name, client in enable_clients.items():
             request = SetBool.Request()
             request.data = enabled
-            client.call_async(request)
+            futures.append((arm_name, client.srv_name, client.call_async(request)))
 
-        if success:
-            self._deployment_controller_enabled = enabled
-            self.get_logger().info(
-                "Deployment controllers " + ("enable requested." if enabled else "disable requested.")
-            )
-        return success
+        self._deployment_controller_target_enabled = enabled
+        self._deployment_controller_transition_futures.extend(futures)
+        self.get_logger().info(
+            "Deployment controllers " + ("enable requested." if enabled else "disable requested.")
+        )
+        return True
 
     def _handle_set_deployment_active(
         self, request: SetBool.Request, response: SetBool.Response
@@ -755,10 +874,23 @@ class LeRobotDataBridge(Node):
         return published_any
 
     def _publish_deployment_commands(self) -> None:
+        self._process_pending_deployment_controller_transition()
         self._drain_deployment_command_socket()
         if not self._deployment_active:
             self._publish_hold_joint_commands()
             return
+
+        if not self._deployment_command_active:
+            if (
+                self._latest_deployment_command is not None
+                and self._command_has_payload(self._latest_deployment_command)
+            ):
+                self._set_deployment_controller_enabled(True)
+                if self._deployment_controller_enabled:
+                    self._deployment_command_active = True
+                    self.get_logger().info(
+                        "Deployment controller is ready; switching from hold to command publishing."
+                    )
 
         if not self._deployment_command_active:
             self._publish_hold_joint_commands()

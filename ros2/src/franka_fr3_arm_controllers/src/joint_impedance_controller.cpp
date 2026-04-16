@@ -236,9 +236,22 @@ CallbackReturn JointImpedanceController::on_activate(
   motion_generator_.reset();
   activation_time_ = get_node()->now();
   resetCommandTracking_(activation_time_);
-  deployment_enabled_ = !deployment_mode_;
+  if (!deployment_mode_) {
+    deployment_enabled_ = true;
+  }
   dq_filtered_.setZero();
   start_time_ = activation_time_;
+
+  return CallbackReturn::SUCCESS;
+}
+
+CallbackReturn JointImpedanceController::on_deactivate(
+    const rclcpp_lifecycle::State& /*previous_state*/) {
+  deployment_enabled_ = !deployment_mode_;
+  hold_position_initialized_ = false;
+  motion_generator_initialized_ = false;
+  move_to_start_position_finished_ = false;
+  motion_generator_.reset();
 
   return CallbackReturn::SUCCESS;
 }

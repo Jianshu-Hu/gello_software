@@ -100,7 +100,8 @@ def generate_robot_nodes(context):
                     controllers_yaml,
                     "--param-file",
                     override_file.name,
-                ],
+                ]
+                + (["--inactive"] if deployment_mode_enabled else []),
                 output="screen",
             )
         )
