@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import re
+import time
 from dataclasses import dataclass
 from typing import Any
 
@@ -11,6 +12,7 @@ from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Float32
+from std_srvs.srv import SetBool
 
 try:
     import pylibfranka
@@ -111,8 +113,19 @@ class LeRobotDataBridge(Node):
         self.max_data_age_sec = float(self.get_parameter("max_data_age_sec").value)
         self.publish_host = str(self.get_parameter("publish_host").value)
         self.publish_port = int(self.get_parameter("publish_port").value)
+        self.command_host = str(self.get_parameter("command_host").value)
+        self.command_port = int(self.get_parameter("command_port").value)
+        self.command_max_age_sec = float(self.get_parameter("command_max_age_sec").value)
         self.task_name = str(self.get_parameter("task_name").value)
         self.deployment_mode = bool(self.get_parameter("deployment_mode").value)
+        self.deployment_start_active = bool(self.get_parameter("deployment_start_active").value)
+        self.deployment_hold_warmup_sec = float(
+            self.get_parameter("deployment_hold_warmup_sec").value
+        )
+        self.deployment_hold_stability_tolerance = float(
+            self.get_parameter("deployment_hold_stability_tolerance").value
+        )
+        self.deployment_state_source = str(self.get_parameter("deployment_state_source").value).strip().lower()
         self.deployment_gripper_action_value = float(
             self.get_parameter("deployment_gripper_action_value").value
         )
@@ -138,6 +151,15 @@ class LeRobotDataBridge(Node):
         self.left_gripper_action_topic = str(
             self.get_parameter("left_gripper_action_topic").value
         )
+        self.left_deployment_joint_command_topic = str(
+            self.get_parameter("left_deployment_joint_command_topic").value
+        )
+        self.left_deployment_gripper_command_topic = str(
+            self.get_parameter("left_deployment_gripper_command_topic").value
+        )
+        self.left_deployment_enable_service = str(
+            self.get_parameter("left_deployment_enable_service").value
+        )
 
         self.right_robot_joint_state_topic = str(
             self.get_parameter("right_robot_joint_state_topic").value
@@ -148,6 +170,15 @@ class LeRobotDataBridge(Node):
         )
         self.right_gripper_action_topic = str(
             self.get_parameter("right_gripper_action_topic").value
+        )
+        self.right_deployment_joint_command_topic = str(
+            self.get_parameter("right_deployment_joint_command_topic").value
+        )
+        self.right_deployment_gripper_command_topic = str(
+            self.get_parameter("right_deployment_gripper_command_topic").value
+        )
+        self.right_deployment_enable_service = str(
+            self.get_parameter("right_deployment_enable_service").value
         )
 
         self.camera_names: list[str] = []
@@ -170,16 +201,43 @@ class LeRobotDataBridge(Node):
         self._deployment_robots: dict[str, Any] = {}
         self._deployment_grippers: dict[str, Any] = {}
         self._last_deployment_warning_time_s: dict[str, float] = {}
+        self._hold_reference_samples: dict[str, JointSample | None] = {"left": None, "right": None}
+        self._hold_reference_start_s: dict[str, float] = {"left": 0.0, "right": 0.0}
 
         self._zmq_context = zmq.Context()
         self._socket = self._zmq_context.socket(zmq.PUB)
         self._socket.setsockopt(zmq.SNDHWM, 1)
         self._socket.bind(f"tcp://{self.publish_host}:{self.publish_port}")
+        self._command_socket: zmq.Socket | None = None
         self._last_wait_reason: str | None = None
         self._last_wait_reason_log_time_s = 0.0
+        self._latest_deployment_command: dict[str, Any] | None = None
+        self._latest_deployment_command_stamp_s = 0.0
+        self._deployment_command_active = False
+        self._deployment_active = self.deployment_start_active
+        self._deployment_controller_enabled = False
+        self._deployment_joint_command_publishers: dict[str, Any] = {}
+        self._deployment_gripper_command_publishers: dict[str, Any] = {}
+        self._deployment_enable_clients: dict[str, Any] = {}
+        self._last_published_gripper_command: dict[str, float | None] = {"left": None, "right": None}
+        self._activation_service = None
 
         if self.deployment_mode:
-            self._initialize_deployment_clients()
+            if self.deployment_state_source == "pylibfranka":
+                self._initialize_deployment_clients()
+            elif self.deployment_state_source == "topics":
+                self._create_live_state_subscriptions()
+            else:
+                raise ValueError(
+                    "deployment_state_source must be either 'pylibfranka' or 'topics'. "
+                    f"Got '{self.deployment_state_source}'."
+                )
+            self._initialize_deployment_command_io()
+            self._activation_service = self.create_service(
+                SetBool,
+                "set_deployment_active",
+                self._handle_set_deployment_active,
+            )
         else:
             self._create_live_state_subscriptions()
 
@@ -196,7 +254,14 @@ class LeRobotDataBridge(Node):
             f"Publishing LeRobot samples over ZMQ on tcp://{self.publish_host}:{self.publish_port}"
         )
         if self.deployment_mode:
-            self.get_logger().info("Deployment mode enabled: reading Franka state via pylibfranka.")
+            self.get_logger().info(
+                f"Deployment mode enabled: reading Franka state via {self.deployment_state_source}."
+            )
+            self.get_logger().info(
+                "Deployment bridge starts in "
+                + ("ACTIVE" if self._deployment_active else "STANDBY")
+                + " mode."
+            )
         else:
             self.get_logger().info(f"Arm action source mode: {self.arm_action_source}")
 
@@ -205,8 +270,15 @@ class LeRobotDataBridge(Node):
         self.declare_parameter("max_data_age_sec", 0.5)
         self.declare_parameter("publish_host", "127.0.0.1")
         self.declare_parameter("publish_port", 5555)
+        self.declare_parameter("command_host", "127.0.0.1")
+        self.declare_parameter("command_port", 5556)
+        self.declare_parameter("command_max_age_sec", 0.5)
         self.declare_parameter("task_name", "franka_gello_teleop")
         self.declare_parameter("deployment_mode", False)
+        self.declare_parameter("deployment_start_active", True)
+        self.declare_parameter("deployment_hold_warmup_sec", 1.0)
+        self.declare_parameter("deployment_hold_stability_tolerance", 0.002)
+        self.declare_parameter("deployment_state_source", "pylibfranka")
         self.declare_parameter("deployment_gripper_action_value", 0.0)
         self.declare_parameter("left_robot_ip", "172.16.0.3")
         self.declare_parameter("right_robot_ip", "172.16.0.2")
@@ -225,6 +297,15 @@ class LeRobotDataBridge(Node):
             "left_gripper_action_topic",
             "/left/gripper/gripper_client/target_gripper_width_percent",
         )
+        self.declare_parameter("left_deployment_joint_command_topic", "/left/gello/joint_states")
+        self.declare_parameter(
+            "left_deployment_gripper_command_topic",
+            "/left/gripper/gripper_client/target_gripper_width_percent",
+        )
+        self.declare_parameter(
+            "left_deployment_enable_service",
+            "/left/joint_impedance_controller/set_deployment_enabled",
+        )
 
         self.declare_parameter("right_robot_joint_state_topic", "/right/franka/joint_states")
         self.declare_parameter("right_arm_action_topic", "/right/franka/commanded_joint_states")
@@ -234,6 +315,15 @@ class LeRobotDataBridge(Node):
         self.declare_parameter(
             "right_gripper_action_topic",
             "/right/gripper/gripper_client/target_gripper_width_percent",
+        )
+        self.declare_parameter("right_deployment_joint_command_topic", "/right/gello/joint_states")
+        self.declare_parameter(
+            "right_deployment_gripper_command_topic",
+            "/right/gripper/gripper_client/target_gripper_width_percent",
+        )
+        self.declare_parameter(
+            "right_deployment_enable_service",
+            "/right/joint_impedance_controller/set_deployment_enabled",
         )
 
         for idx, default_name in enumerate(["cam_left", "cam_front", "cam_right"], start=1):
@@ -323,6 +413,40 @@ class LeRobotDataBridge(Node):
                         f"Failed to connect to {arm_name} Franka gripper at {robot_ip}: {exc}"
                     ) from exc
 
+    def _initialize_deployment_command_io(self) -> None:
+        self._command_socket = self._zmq_context.socket(zmq.PULL)
+        self._command_socket.setsockopt(zmq.RCVHWM, 1)
+        self._command_socket.bind(f"tcp://{self.command_host}:{self.command_port}")
+
+        joint_topics = {
+            "left": self.left_deployment_joint_command_topic,
+            "right": self.right_deployment_joint_command_topic,
+        }
+        gripper_topics = {
+            "left": self.left_deployment_gripper_command_topic,
+            "right": self.right_deployment_gripper_command_topic,
+        }
+        for arm_name in self._required_arms():
+            self._deployment_joint_command_publishers[arm_name] = self.create_publisher(
+                JointState, joint_topics[arm_name], 10
+            )
+            if self.include_gripper:
+                self._deployment_gripper_command_publishers[arm_name] = self.create_publisher(
+                    Float32, gripper_topics[arm_name], 10
+                )
+        enable_services = {
+            "left": self.left_deployment_enable_service,
+            "right": self.right_deployment_enable_service,
+        }
+        for arm_name in self._required_arms():
+            self._deployment_enable_clients[arm_name] = self.create_client(
+                SetBool, enable_services[arm_name]
+            )
+
+        self.get_logger().info(
+            f"Deployment command bridge listening on tcp://{self.command_host}:{self.command_port}"
+        )
+
     def _required_arms(self) -> list[str]:
         return ["left", "right"] if self.include_right_arm else ["left"]
 
@@ -345,28 +469,37 @@ class LeRobotDataBridge(Node):
             )
         return self._ARM_ACTION_SOURCE_ALIASES[normalized_source]
 
-    def _extract_ordered_arm_joint_values(self, msg: JointState) -> list[float]:
+    def _extract_ordered_arm_joint_values(self, msg: JointState) -> list[float] | None:
         expected_size = 7
         if len(msg.position) < expected_size:
-            return [float(value) for value in msg.position]
+            return None
 
         if len(msg.name) < expected_size:
             return [float(value) for value in msg.position[:expected_size]]
 
         ordered_values: list[float | None] = [None] * expected_size
+        matched_arm_joints = 0
         for joint_name, joint_value in zip(msg.name, msg.position, strict=True):
-            match = re.search(r"(\d+)$", joint_name)
+            match = re.search(r"(?:^|_)(?:fr3|panda)_joint([1-7])$", joint_name)
             if match is None:
                 continue
             joint_index = int(match.group(1)) - 1
             if 0 <= joint_index < expected_size:
                 ordered_values[joint_index] = float(joint_value)
+                matched_arm_joints += 1
 
         if all(value is not None for value in ordered_values):
             return [float(value) for value in ordered_values]
 
+        if matched_arm_joints > 0:
+            self.get_logger().warning(
+                "Could not extract a complete 7-DoF arm JointState sample. "
+                "Ignoring this sample instead of falling back to a potentially mixed joint order."
+            )
+            return None
+
         self.get_logger().warning(
-            "Could not fully reorder JointState by joint name suffix. "
+            "Could not reorder JointState by arm joint names. "
             "Falling back to raw position order for this sample."
         )
         return [float(value) for value in msg.position[:expected_size]]
@@ -374,8 +507,11 @@ class LeRobotDataBridge(Node):
     def _store_joint_sample(
         self, storage: dict[str, JointSample | None], arm_name: str, msg: JointState
     ) -> None:
+        ordered_values = self._extract_ordered_arm_joint_values(msg)
+        if ordered_values is None:
+            return
         storage[arm_name] = JointSample(
-            values=self._extract_ordered_arm_joint_values(msg),
+            values=ordered_values,
             stamp_s=_stamp_to_float_seconds(msg.header.stamp.sec, msg.header.stamp.nanosec),
         )
 
@@ -444,6 +580,245 @@ class LeRobotDataBridge(Node):
                     f"{arm_name}_gripper",
                     f"Failed to read {arm_name} gripper state from {arm_ips[arm_name]}: {exc}",
                 )
+
+    def _drain_deployment_command_socket(self) -> None:
+        if self._command_socket is None:
+            return
+
+        while True:
+            try:
+                command = self._command_socket.recv_pyobj(flags=zmq.NOBLOCK)
+            except zmq.Again:
+                break
+
+            if isinstance(command, dict):
+                self._latest_deployment_command = command
+                self._latest_deployment_command_stamp_s = self._now_s()
+                if not self._deployment_active:
+                    continue
+                if not self._deployment_command_active and self._command_has_payload(command):
+                    if self._set_deployment_controller_enabled(True):
+                        self._deployment_command_active = True
+                        self.get_logger().info(
+                            "Received first deployment command packet; enabling ROS2 command publishing."
+                        )
+
+    def _command_has_payload(self, command: dict[str, Any]) -> bool:
+        for arm_name in self._required_arms():
+            joint_target = command.get(f"{arm_name}_joint_target")
+            if isinstance(joint_target, list) and joint_target:
+                return True
+            gripper_command = command.get(f"{arm_name}_gripper_command")
+            if gripper_command is not None:
+                return True
+        return False
+
+    def _joint_state_message(self, arm_name: str, positions: list[float]) -> JointState:
+        now_msg = self.get_clock().now().to_msg()
+        msg = JointState()
+        msg.header.stamp = now_msg
+        msg.name = [f"fr3_joint{index}" for index in range(1, len(positions) + 1)]
+        msg.position = [float(value) for value in positions]
+        return msg
+
+    def _set_deployment_controller_enabled(self, enabled: bool) -> bool:
+        if self._deployment_controller_enabled == enabled:
+            return True
+
+        success = True
+        for arm_name in self._required_arms():
+            client = self._deployment_enable_clients.get(arm_name)
+            if client is None:
+                continue
+            if not client.wait_for_service(timeout_sec=0.2):
+                self._log_deployment_warning(
+                    f"{arm_name}_enable_service_missing",
+                    f"Deployment enable service for {arm_name} arm is not available yet.",
+                )
+                success = False
+                continue
+            request = SetBool.Request()
+            request.data = enabled
+            client.call_async(request)
+
+        if success:
+            self._deployment_controller_enabled = enabled
+            self.get_logger().info(
+                "Deployment controllers " + ("enable requested." if enabled else "disable requested.")
+            )
+        return success
+
+    def _handle_set_deployment_active(
+        self, request: SetBool.Request, response: SetBool.Response
+    ) -> SetBool.Response:
+        self._deployment_active = bool(request.data)
+        if not self._deployment_active:
+            self._deployment_command_active = False
+            self._latest_deployment_command = None
+            self._latest_deployment_command_stamp_s = 0.0
+            self._set_deployment_controller_enabled(False)
+            self.get_logger().info(
+                "Deployment bridge switched to STANDBY mode. Publishing hold commands only."
+            )
+        else:
+            self.get_logger().info(
+                "Deployment bridge switched to ACTIVE mode. Observation streaming enabled."
+            )
+        response.success = True
+        response.message = "active" if self._deployment_active else "standby"
+        return response
+
+    def _command_is_fresh(self) -> bool:
+        return (
+            self._latest_deployment_command is not None
+            and (self._now_s() - self._latest_deployment_command_stamp_s) <= self.command_max_age_sec
+        )
+
+    def _current_or_command_joint_target(self, arm_name: str) -> list[float]:
+        if self.latest_robot_arm_samples[arm_name] is None:
+            return []
+
+        if not self._command_is_fresh():
+            return list(self.latest_robot_arm_samples[arm_name].values)
+
+        command_key = f"{arm_name}_joint_target"
+        command = self._latest_deployment_command or {}
+        target = command.get(command_key)
+        if not isinstance(target, list) or not target:
+            return list(self.latest_robot_arm_samples[arm_name].values)
+        return [float(value) for value in target]
+
+    def _arm_state_is_stable_for_hold(self, arm_name: str) -> bool:
+        sample = self.latest_robot_arm_samples[arm_name]
+        if sample is None:
+            self._log_deployment_warning(
+                f"{arm_name}_hold_no_state",
+                f"Waiting for {arm_name} robot joint state before publishing hold commands.",
+            )
+            return False
+
+        now_s = self._now_s()
+        reference = self._hold_reference_samples[arm_name]
+        if reference is None or len(reference.values) != len(sample.values):
+            self._hold_reference_samples[arm_name] = JointSample(
+                values=list(sample.values),
+                stamp_s=sample.stamp_s,
+            )
+            self._hold_reference_start_s[arm_name] = now_s
+            return False
+
+        max_delta = max(
+            abs(current - previous)
+            for current, previous in zip(sample.values, reference.values, strict=True)
+        )
+        if max_delta > self.deployment_hold_stability_tolerance:
+            self._hold_reference_samples[arm_name] = JointSample(
+                values=list(sample.values),
+                stamp_s=sample.stamp_s,
+            )
+            self._hold_reference_start_s[arm_name] = now_s
+            self._log_deployment_warning(
+                f"{arm_name}_hold_unstable",
+                f"Waiting for stable {arm_name} robot joint state before publishing hold commands "
+                f"(max delta {max_delta:.6f} rad).",
+            )
+            return False
+
+        stable_duration_s = now_s - self._hold_reference_start_s[arm_name]
+        if stable_duration_s < self.deployment_hold_warmup_sec:
+            self._log_deployment_warning(
+                f"{arm_name}_hold_warmup",
+                f"Waiting for {arm_name} robot joint state to stay stable for "
+                f"{self.deployment_hold_warmup_sec:.2f}s before publishing hold commands.",
+            )
+            return False
+
+        return True
+
+    def _all_arm_states_are_stable_for_hold(self) -> bool:
+        return all(self._arm_state_is_stable_for_hold(arm_name) for arm_name in self._required_arms())
+
+    def _publish_hold_joint_commands(self) -> bool:
+        if not self._all_arm_states_are_stable_for_hold():
+            return False
+
+        published_any = False
+        for arm_name in self._required_arms():
+            sample = self.latest_robot_arm_samples[arm_name]
+            if sample is None:
+                continue
+            publisher = self._deployment_joint_command_publishers.get(arm_name)
+            if publisher is None:
+                continue
+            publisher.publish(self._joint_state_message(arm_name, list(sample.values)))
+            published_any = True
+        return published_any
+
+    def _publish_deployment_commands(self) -> None:
+        self._drain_deployment_command_socket()
+        if not self._deployment_active:
+            self._publish_hold_joint_commands()
+            return
+
+        if not self._deployment_command_active:
+            self._publish_hold_joint_commands()
+            return
+
+        for arm_name in self._required_arms():
+            target = self._current_or_command_joint_target(arm_name)
+            if not target:
+                continue
+            publisher = self._deployment_joint_command_publishers.get(arm_name)
+            if publisher is not None:
+                publisher.publish(self._joint_state_message(arm_name, target))
+
+        if not self.include_gripper or not self._command_is_fresh():
+            return
+
+        command = self._latest_deployment_command or {}
+        for arm_name in self._required_arms():
+            command_key = f"{arm_name}_gripper_command"
+            raw_value = command.get(command_key)
+            if raw_value is None:
+                continue
+
+            clamped_value = max(0.0, min(1.0, float(raw_value)))
+            last_value = self._last_published_gripper_command[arm_name]
+            if last_value is not None and abs(clamped_value - last_value) < 1e-6:
+                continue
+
+            publisher = self._deployment_gripper_command_publishers.get(arm_name)
+            if publisher is None:
+                continue
+
+            msg = Float32()
+            msg.data = clamped_value
+            publisher.publish(msg)
+            self._last_published_gripper_command[arm_name] = clamped_value
+
+    def _publish_deployment_hold_commands_on_shutdown(self) -> None:
+        if not self.deployment_mode:
+            return
+
+        published_any = False
+        for _ in range(5):
+            published_this_cycle = False
+            for arm_name in self._required_arms():
+                sample = self.latest_robot_arm_samples.get(arm_name)
+                publisher = self._deployment_joint_command_publishers.get(arm_name)
+                if sample is None or publisher is None:
+                    continue
+                publisher.publish(self._joint_state_message(arm_name, list(sample.values)))
+                published_this_cycle = True
+                published_any = True
+            if not published_this_cycle:
+                break
+            time.sleep(0.02)
+
+        if published_any:
+            self.get_logger().info(
+                "Published final deployment hold command(s) before shutting down the bridge."
+            )
 
     def _arm_action_sample(self, arm_name: str) -> JointSample | None:
         if self.arm_action_source in {"topic", "topic_delta"}:
@@ -551,8 +926,12 @@ class LeRobotDataBridge(Node):
         return True, ""
 
     def _publish_sample(self) -> None:
-        if self.deployment_mode:
+        if self.deployment_mode and self.deployment_state_source == "pylibfranka":
             self._refresh_deployment_samples()
+        if self.deployment_mode:
+            self._publish_deployment_commands()
+            if not self._deployment_active:
+                return
 
         ready, reason = self._sample_is_ready()
         if not ready:
@@ -618,6 +997,10 @@ class LeRobotDataBridge(Node):
             )
 
     def destroy_node(self) -> bool:
+        self._set_deployment_controller_enabled(False)
+        self._publish_deployment_hold_commands_on_shutdown()
+        if self._command_socket is not None:
+            self._command_socket.close(0)
         self._socket.close(0)
         self._zmq_context.term()
         return super().destroy_node()

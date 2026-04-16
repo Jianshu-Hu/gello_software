@@ -55,6 +55,21 @@ controller_interface::return_type JointImpedanceController::update(
   Vector7d q_goal;
   Vector7d tau_d_calculated;
 
+  if (deployment_mode_ && !deployment_enabled_) {
+    if (!hold_position_initialized_) {
+      hold_position_ = q_;
+      hold_position_initialized_ = true;
+    }
+    q_goal = hold_position_;
+    tau_d_calculated = calculateTauDGains_(q_goal);
+    for (int i = 0; i < num_joints; ++i) {
+      command_interfaces_[i].set_value(tau_d_calculated(i));
+    }
+    publishCommandedJointState_(q_goal);
+
+    return controller_interface::return_type::OK;
+  }
+
   if (!motion_generator_initialized_) {
     // After starting the controller we wait for valid joint states from the input topic
     // Until we get valid joint states we hold the current robot position to avoid
@@ -121,9 +136,9 @@ void JointImpedanceController::jointStateCallback_(const sensor_msgs::msg::Joint
   }
 
   const auto msg_time = rclcpp::Time(msg.header.stamp);
-  if (msg_time < activation_time_) {
+  if (msg_time < command_accept_time_) {
     RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 2000,
-                         "Ignoring stale joint command message published before controller activation");
+                         "Ignoring stale joint command message published before controller activation/enabling");
     return;
   }
 
@@ -139,6 +154,7 @@ CallbackReturn JointImpedanceController::on_init() {
     auto_declare<std::string>("arm_id", "");
     auto_declare<std::vector<double>>("k_gains", {});
     auto_declare<std::vector<double>>("d_gains", {});
+    auto_declare<bool>("deployment_mode", false);
   } catch (const std::exception& e) {
     fprintf(stderr, "Exception thrown during init stage with message: %s \n", e.what());
     return CallbackReturn::ERROR;
@@ -176,6 +192,8 @@ CallbackReturn JointImpedanceController::on_configure(
   }
 
   k_alpha_ = k_alpha;
+  deployment_mode_ = get_node()->get_parameter("deployment_mode").as_bool();
+  deployment_enabled_ = !deployment_mode_;
 
   dq_filtered_.setZero();
   for (int i = 0; i < num_joints; ++i) {
@@ -200,20 +218,25 @@ CallbackReturn JointImpedanceController::on_configure(
   commanded_joint_state_publisher_ =
       get_node()->create_publisher<sensor_msgs::msg::JointState>("franka/commanded_joint_states",
                                                                  10);
+  deployment_enable_service_ = get_node()->create_service<std_srvs::srv::SetBool>(
+      "joint_impedance_controller/set_deployment_enabled",
+      [this](const std::shared_ptr<std_srvs::srv::SetBool::Request>& request,
+             std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
+        handleSetDeploymentEnabled_(request, response);
+      });
 
   return CallbackReturn::SUCCESS;
 }
 
 CallbackReturn JointImpedanceController::on_activate(
     const rclcpp_lifecycle::State& /*previous_state*/) {
-  gello_position_values_valid_ = false;
-  gello_position_values_.fill(0.0);
   move_to_start_position_finished_ = false;
   motion_generator_initialized_ = false;
   hold_position_initialized_ = false;
   motion_generator_.reset();
-  last_joint_state_time_ = get_node()->now();
-  activation_time_ = last_joint_state_time_;
+  activation_time_ = get_node()->now();
+  resetCommandTracking_(activation_time_);
+  deployment_enabled_ = !deployment_mode_;
   dq_filtered_.setZero();
   start_time_ = activation_time_;
 
@@ -277,6 +300,50 @@ void JointImpedanceController::validateGelloPositions_(const sensor_msgs::msg::J
                 "since message stamp: %f",
                 time_since_last_joint_state, time_since_msg_stamp);
   }
+}
+
+void JointImpedanceController::enterHoldMode_() {
+  hold_position_ = q_;
+  hold_position_initialized_ = true;
+  move_to_start_position_finished_ = false;
+  motion_generator_initialized_ = false;
+  motion_generator_.reset();
+  start_time_ = get_node()->now();
+}
+
+void JointImpedanceController::resetCommandTracking_(const rclcpp::Time& reference_time) {
+  gello_position_values_valid_ = false;
+  gello_position_values_.fill(0.0);
+  last_joint_state_time_ = reference_time;
+  command_accept_time_ = reference_time;
+}
+
+void JointImpedanceController::setDeploymentEnabled_(bool enabled) {
+  deployment_enabled_ = enabled;
+  resetCommandTracking_(get_node()->now());
+  if (!enabled) {
+    updateJointStates_();
+    enterHoldMode_();
+  } else {
+    hold_position_initialized_ = false;
+  }
+}
+
+void JointImpedanceController::handleSetDeploymentEnabled_(
+    const std::shared_ptr<std_srvs::srv::SetBool::Request>& request,
+    std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
+  if (!deployment_mode_) {
+    response->success = true;
+    response->message = "deployment_mode is false; teleoperation mode remains enabled.";
+    return;
+  }
+
+  setDeploymentEnabled_(request->data);
+  response->success = true;
+  response->message = request->data ? "enabled" : "disabled";
+  RCLCPP_INFO(
+      get_node()->get_logger(), "Deployment control %s via service request.",
+      request->data ? "enabled" : "disabled");
 }
 
 void JointImpedanceController::updateJointStates_() {

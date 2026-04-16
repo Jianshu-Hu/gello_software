@@ -20,6 +20,7 @@
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <string>
+#include <std_srvs/srv/set_bool.hpp>
 #include "franka_fr3_arm_controllers/motion_generator.hpp"
 
 using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
@@ -57,11 +58,15 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   bool move_to_start_position_finished_{false};
   bool motion_generator_initialized_{false};
   bool hold_position_initialized_{false};
+  bool deployment_mode_{false};
+  bool deployment_enabled_{true};
   rclcpp::Time start_time_;
+  rclcpp::Time command_accept_time_;
   std::unique_ptr<MotionGenerator> motion_generator_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscriber_ = nullptr;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr commanded_joint_state_publisher_ =
       nullptr;
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr deployment_enable_service_ = nullptr;
   bool gello_position_values_valid_ = false;
   std::array<double, 7> gello_position_values_{0, 0, 0, 0, 0, 0, 0};
   rclcpp::Time last_joint_state_time_;
@@ -74,6 +79,12 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   void publishCommandedJointState_(const Vector7d& q_goal);
   void updateJointStates_();
   void validateGelloPositions_(const sensor_msgs::msg::JointState& msg);
+  void enterHoldMode_();
+  void resetCommandTracking_(const rclcpp::Time& reference_time);
+  void setDeploymentEnabled_(bool enabled);
+  void handleSetDeploymentEnabled_(
+      const std::shared_ptr<std_srvs::srv::SetBool::Request>& request,
+      std::shared_ptr<std_srvs::srv::SetBool::Response> response);
   void jointStateCallback_(const sensor_msgs::msg::JointState msg);
 };
 

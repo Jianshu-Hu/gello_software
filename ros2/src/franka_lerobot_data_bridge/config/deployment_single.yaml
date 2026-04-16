@@ -4,8 +4,15 @@ lerobot_data_bridge:
     max_data_age_sec: 1.0
     publish_host: "127.0.0.1"
     publish_port: 5555
+    command_host: "127.0.0.1"
+    command_port: 5556
+    command_max_age_sec: 0.5
     task_name: "pick and place"
     deployment_mode: true
+    deployment_start_active: false
+    deployment_hold_warmup_sec: 1.0
+    deployment_hold_stability_tolerance: 0.002
+    deployment_state_source: "topics"
     left_robot_ip: "172.16.0.3"
     right_robot_ip: "172.16.0.2"
     deployment_gripper_action_value: 0.0
@@ -13,6 +20,11 @@ lerobot_data_bridge:
     include_right_arm: false
     require_gripper_freshness: true
     arm_action_source: "robot_state"
+    left_robot_joint_state_topic: "/left/franka/joint_states"
+    left_robot_gripper_state_topic: "/left/franka_gripper/joint_states"
+    left_deployment_joint_command_topic: "/left/gello/joint_states"
+    left_deployment_gripper_command_topic: "/left/gripper/gripper_client/target_gripper_width_percent"
+    left_deployment_enable_service: "/left/joint_impedance_controller/set_deployment_enabled"
 
     camera_1_enabled: true
     camera_1_name: "cam_left"

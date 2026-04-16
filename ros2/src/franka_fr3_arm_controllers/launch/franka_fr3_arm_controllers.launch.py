@@ -13,6 +13,7 @@
 #  limitations under the License.
 
 import os
+import tempfile
 import yaml
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription, OpaqueFunction
@@ -33,12 +34,33 @@ def load_yaml(file_path):
 
 def generate_robot_nodes(context):
     config_file_name = LaunchConfiguration("robot_config_file").perform(context)
+    deployment_mode = LaunchConfiguration("deployment_mode").perform(context)
+    deployment_mode_enabled = deployment_mode.lower() == "true"
     package_config_dir = FindPackageShare("franka_fr3_arm_controllers").perform(context)
     config_file = os.path.join(package_config_dir, "config", config_file_name)
+    controllers_yaml = os.path.join(package_config_dir, "config", "controllers.yaml")
     configs = load_yaml(config_file)
     nodes = []
     for item_name, config in configs.items():
         namespace = config["namespace"]
+        override_file = tempfile.NamedTemporaryFile(
+            mode="w",
+            suffix=f"_{namespace}_deployment_controller.yaml",
+            prefix="franka_fr3_arm_controllers_",
+            delete=False,
+        )
+        yaml.safe_dump(
+            {
+                "/**": {
+                    "joint_impedance_controller": {
+                        "ros__parameters": {"deployment_mode": deployment_mode_enabled}
+                    }
+                }
+            },
+            override_file,
+        )
+        override_file.flush()
+        override_file.close()
         nodes.append(
             IncludeLaunchDescription(
                 PythonLaunchDescriptionSource(
@@ -61,6 +83,7 @@ def generate_robot_nodes(context):
                     "fake_sensor_commands": str(config["fake_sensor_commands"]),
                     "joint_sources": ",".join(config["joint_sources"]),
                     "joint_state_rate": str(config["joint_state_rate"]),
+                    "deployment_mode": deployment_mode,
                 }.items(),
             )
         )
@@ -69,15 +92,14 @@ def generate_robot_nodes(context):
                 package="controller_manager",
                 executable="spawner",
                 namespace=namespace,
-                arguments=["joint_impedance_controller", "--controller-manager-timeout", "30"],
-                parameters=[
-                    PathJoinSubstitution(
-                        [
-                            FindPackageShare("franka_fr3_arm_controllers"),
-                            "config",
-                            "controllers.yaml",
-                        ]
-                    )
+                arguments=[
+                    "joint_impedance_controller",
+                    "--controller-manager-timeout",
+                    "30",
+                    "--param-file",
+                    controllers_yaml,
+                    "--param-file",
+                    override_file.name,
                 ],
                 output="screen",
             )
@@ -111,6 +133,11 @@ def generate_launch_description():
                 "robot_config_file",
                 default_value="example_fr3_config.yaml",
                 description="Name of the robot configuration file to load (relative to config/ in franka_arm_controllers)",
+            ),
+            DeclareLaunchArgument(
+                "deployment_mode",
+                default_value="false",
+                description="Enable deployment-mode gating for joint_impedance_controller.",
             ),
             OpaqueFunction(function=generate_robot_nodes),
         ]

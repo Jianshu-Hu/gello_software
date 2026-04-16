@@ -113,6 +113,14 @@ def generate_robot_nodes(context):
     joint_sources_str = LaunchConfiguration("joint_sources").perform(context)
     joint_sources = joint_sources_str.split(",")
     joint_state_rate = int(LaunchConfiguration("joint_state_rate").perform(context))
+    deployment_mode = LaunchConfiguration("deployment_mode").perform(context).lower() == "true"
+    controller_overrides = {
+        "/**": {
+            "joint_impedance_controller": {
+                "ros__parameters": {"deployment_mode": deployment_mode}
+            }
+        }
+    }
 
     nodes = [
         Node(
@@ -128,6 +136,7 @@ def generate_robot_nodes(context):
             namespace=namespace,
             parameters=[
                 controllers_yaml,
+                controller_overrides,
                 {"robot_description": robot_description},
                 {"arm_id": arm_id},
                 {"namespace": namespace},
@@ -232,6 +241,11 @@ def generate_launch_description():
             "joint_state_rate",
             default_value="30",
             description="Rate for joint state publishing (Hz)",
+        ),
+        DeclareLaunchArgument(
+            "deployment_mode",
+            default_value="false",
+            description="Enable deployment-mode gating for joint_impedance_controller.",
         ),
     ]
 

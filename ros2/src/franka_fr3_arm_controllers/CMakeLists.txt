@@ -36,6 +36,7 @@ find_package(Eigen3 REQUIRED)
 find_package(franka_semantic_components REQUIRED)
 find_package(moveit_core REQUIRED)
 find_package(moveit_msgs REQUIRED)
+find_package(std_srvs REQUIRED)
 
 add_library(
         ${PROJECT_NAME}
@@ -58,6 +59,7 @@ ament_target_dependencies(
         franka_semantic_components
         moveit_core
         moveit_msgs
+        std_srvs
 )
 
 pluginlib_export_plugin_description_file(
@@ -94,6 +96,7 @@ ament_export_dependencies(
         rclcpp_lifecycle
         hardware_interface
         moveit_core
+        std_srvs
 )
 
 if(BUILD_TESTING)
