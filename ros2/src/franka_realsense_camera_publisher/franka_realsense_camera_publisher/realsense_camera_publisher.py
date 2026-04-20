@@ -1,12 +1,14 @@
 from __future__ import annotations
 
 from dataclasses import dataclass
+import threading
 from typing import Any
 
 import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
+from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image
 
 
@@ -18,7 +20,9 @@ class CameraPublisher:
     flip: bool
     pipeline: Any
     publisher: Any
+    worker_thread: threading.Thread | None = None
     warned_no_frame: bool = False
+    last_publish_time_s: float = 0.0
 
 
 def list_realsense_serials() -> list[str]:
@@ -48,6 +52,7 @@ class RealSenseCameraPublisher(Node):
         self.camera_fps = int(self.get_parameter("camera_fps").value)
         self.publish_rate_hz = float(self.get_parameter("publish_rate_hz").value)
         self.frame_id_prefix = str(self.get_parameter("frame_id_prefix").value)
+        self._shutdown_event = threading.Event()
 
         requested_configs = []
         for idx in range(1, 4):
@@ -93,7 +98,14 @@ class RealSenseCameraPublisher(Node):
         self.camera_publishers: list[CameraPublisher] = [
             self._create_camera_publisher(config) for config in requested_configs
         ]
-        self.timer = self.create_timer(1.0 / self.publish_rate_hz, self._publish_images)
+        for camera in self.camera_publishers:
+            camera.worker_thread = threading.Thread(
+                target=self._camera_capture_loop,
+                args=(camera,),
+                name=f"realsense-{camera.name}",
+                daemon=True,
+            )
+            camera.worker_thread.start()
 
         camera_descriptions = ", ".join(
             f"{camera.name}({camera.serial} -> {camera.topic})" for camera in self.camera_publishers
@@ -127,19 +139,22 @@ class RealSenseCameraPublisher(Node):
         pipeline = rs.pipeline()
         rs_config = rs.config()
         rs_config.enable_device(config["serial"])
-        rs_config.enable_stream(rs.stream.color, self.width, self.height, rs.format.bgr8, self.camera_fps)
+        rs_config.enable_stream(rs.stream.color, self.width, self.height, rs.format.rgb8, self.camera_fps)
         try:
-            pipeline.start(rs_config)
+            profile = pipeline.start(rs_config)
         except RuntimeError as exc:
             raise RuntimeError(
                 f"Failed to start RealSense camera '{config['name']}' "
                 f"(serial {config['serial']}) on topic {config['topic']}: {exc}"
             ) from exc
 
-        for _ in range(15):
-            pipeline.wait_for_frames()
+        for _ in range(5):
+            try:
+                pipeline.wait_for_frames(timeout_ms=1000)
+            except RuntimeError:
+                break
 
-        publisher = self.create_publisher(Image, config["topic"], 10)
+        publisher = self.create_publisher(Image, config["topic"], qos_profile_sensor_data)
         return CameraPublisher(
             name=config["name"],
             topic=config["topic"],
@@ -149,11 +164,14 @@ class RealSenseCameraPublisher(Node):
             publisher=publisher,
         )
 
-    def _publish_images(self) -> None:
-        now = self.get_clock().now().to_msg()
-        for camera in self.camera_publishers:
-            frames = camera.pipeline.poll_for_frames()
-            if not frames:
+    def _camera_capture_loop(self, camera: CameraPublisher) -> None:
+        enforce_publish_rate = 0.0 < self.publish_rate_hz < float(self.camera_fps)
+        publish_period_s = 0.0 if not enforce_publish_rate else 1.0 / self.publish_rate_hz
+
+        while rclpy.ok() and not self._shutdown_event.is_set():
+            try:
+                frames = camera.pipeline.wait_for_frames(timeout_ms=1000)
+            except RuntimeError:
                 if not camera.warned_no_frame:
                     self.get_logger().warning(
                         f"No fresh frame available yet for {camera.name} on {camera.topic}"
@@ -163,27 +181,47 @@ class RealSenseCameraPublisher(Node):
 
             color_frame = frames.get_color_frame()
             if not color_frame:
+                if not camera.warned_no_frame:
+                    self.get_logger().warning(
+                        f"RealSense returned frames for {camera.name} without a color image on {camera.topic}"
+                    )
+                    camera.warned_no_frame = True
                 continue
+
+            now_msg = self.get_clock().now().to_msg()
+            now_s = float(now_msg.sec) + (float(now_msg.nanosec) * 1e-9)
+            if publish_period_s > 0.0:
+                elapsed_s = now_s - camera.last_publish_time_s
+                if elapsed_s + 0.002 < publish_period_s:
+                    continue
+
             camera.warned_no_frame = False
+            camera.last_publish_time_s = now_s
 
-            color_bgr = np.asanyarray(color_frame.get_data())
+            frame_width = int(color_frame.get_width())
+            frame_height = int(color_frame.get_height())
             if camera.flip:
-                color_bgr = np.rot90(color_bgr, 2)
-
-            color_rgb = np.ascontiguousarray(color_bgr[:, :, ::-1])
+                color_rgb = np.ascontiguousarray(np.rot90(np.asanyarray(color_frame.get_data()), 2))
+                image_bytes = color_rgb.tobytes()
+            else:
+                image_bytes = bytes(color_frame.get_data())
 
             msg = Image()
-            msg.header.stamp = now
+            msg.header.stamp = now_msg
             msg.header.frame_id = f"{self.frame_id_prefix}/{camera.name}"
-            msg.height = color_rgb.shape[0]
-            msg.width = color_rgb.shape[1]
+            msg.height = frame_height
+            msg.width = frame_width
             msg.encoding = "rgb8"
             msg.is_bigendian = False
-            msg.step = color_rgb.shape[1] * color_rgb.shape[2]
-            msg.data = color_rgb.tobytes()
+            msg.step = frame_width * 3
+            msg.data = image_bytes
             camera.publisher.publish(msg)
 
     def destroy_node(self) -> bool:
+        self._shutdown_event.set()
+        for camera in getattr(self, "camera_publishers", []):
+            if camera.worker_thread is not None and camera.worker_thread.is_alive():
+                camera.worker_thread.join(timeout=1.5)
         for camera in getattr(self, "camera_publishers", []):
             camera.pipeline.stop()
         return super().destroy_node()
