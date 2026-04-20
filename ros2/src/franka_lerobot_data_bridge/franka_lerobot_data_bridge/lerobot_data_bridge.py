@@ -11,7 +11,6 @@ import zmq
 from controller_manager_msgs.srv import SwitchController
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
-from rclpy.qos import qos_profile_sensor_data
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Float32
 from std_srvs.srv import SetBool
@@ -251,7 +250,7 @@ class LeRobotDataBridge(Node):
                 Image,
                 topic,
                 lambda msg, camera_index=idx: self._on_camera_image(camera_index, msg),
-                qos_profile_sensor_data,
+                10,
             )
 
         self.timer = self.create_timer(1.0 / self.sample_rate_hz, self._publish_sample)

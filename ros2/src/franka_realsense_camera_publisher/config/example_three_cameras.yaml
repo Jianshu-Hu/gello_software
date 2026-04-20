@@ -11,15 +11,23 @@ realsense_camera_publisher:
     camera_1_serial: "260322270745"
     camera_1_flip: false
     camera_1_topic: "/cameras/cam_left/image_raw"
+    camera_1_exposure_mode: "manual"
+    camera_1_exposure_value: 5000.0
+    camera_1_gain_value: -1.0
 
     camera_2_enabled: true
     camera_2_name: "cam_right"
     camera_2_serial: "260322272504"
     camera_2_flip: false
     camera_2_topic: "/cameras/cam_right/image_raw"
+    camera_2_exposure_mode: "manual"
+    camera_2_exposure_value: 5000.0
+    camera_2_gain_value: -1.0
 
     camera_3_enabled: true
     camera_3_name: "cam_front"
     camera_3_serial: "401622071701"
     camera_3_flip: false
     camera_3_topic: "/cameras/cam_front/image_raw"
+    camera_3_exposure_mode: "auto"
+    camera_3_gain_value: -1.0
