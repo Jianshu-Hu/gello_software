@@ -8,6 +8,8 @@ from launch.substitutions import Command, FindExecutable, LaunchConfiguration, P
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
+from launch_ros.parameter_descriptions import ParameterValue
+
 def generate_launch_description():
     robot_ip_parameter_name = 'robot_ip'
     load_gripper_parameter_name = 'load_gripper'
@@ -37,14 +39,14 @@ def generate_launch_description():
         executable='robot_state_publisher',
         name='robot_state_publisher',
         output='both',
-        parameters=[{'robot_description': robot_description}],
+        parameters=[{'robot_description': ParameterValue(robot_description, value_type=str)}],
     )
 
     # Spawn the Controller Manager
     controller_manager_node = Node(
         package='controller_manager',
         executable='ros2_control_node',
-        parameters=[{'robot_description': robot_description}, controllers_file],
+        parameters=[{'robot_description': ParameterValue(robot_description, value_type=str)}, controllers_file],
         output={
             'stdout': 'screen',
             'stderr': 'screen',
