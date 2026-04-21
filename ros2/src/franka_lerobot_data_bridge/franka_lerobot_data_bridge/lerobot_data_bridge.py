@@ -990,7 +990,7 @@ class LeRobotDataBridge(Node):
 
     def _arm_action_representation(self) -> str:
         if self.deployment_mode:
-            return "delta_joint_position"
+            return "absolute_joint_position"
         if self.arm_action_source in {"topic_delta", "robot_delta"}:
             return "delta_joint_position"
         return "absolute_joint_position"
