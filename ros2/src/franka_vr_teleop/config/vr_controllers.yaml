@@ -15,18 +15,18 @@ cartesian_pose_example_controller:
   ros__parameters:
     arm_id: fr3
     k_gains:
-      - 24.0
-      - 24.0
-      - 24.0
-      - 24.0
-      - 10.0
-      - 6.0
-      - 2.0
+      - 10.0  # X stiffness (molasses)
+      - 10.0  # Y stiffness
+      - 10.0  # Z stiffness
+      - 2.0   # Roll stiffness
+      - 2.0   # Pitch stiffness
+      - 2.0   # Yaw stiffness
+      - 1.0   # Nullspace stiffness
     d_gains:
-      - 2.0
-      - 2.0
-      - 2.0
-      - 1.0
-      - 1.0
-      - 1.0
-      - 0.5
+      - 50.0  # X damping (highly damped)
+      - 50.0  # Y damping
+      - 50.0  # Z damping
+      - 10.0  # Roll damping
+      - 10.0  # Pitch damping
+      - 10.0  # Yaw damping
+      - 2.0   # Nullspace damping
