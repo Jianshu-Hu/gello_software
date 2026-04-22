@@ -110,7 +110,7 @@ def generate_launch_description():
             robot_state_publisher,
             controller_manager_node,
             franka_robot_state_broadcaster,
-            # joint_state_broadcaster, # Unused initially if cartesian handles joints, but standard to keep
+            joint_state_broadcaster,
             cartesian_controller_spawner,
             vr_bridge_node
         ]
