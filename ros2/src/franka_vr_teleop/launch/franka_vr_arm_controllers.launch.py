@@ -30,7 +30,7 @@ def generate_launch_description():
     robot_description = Command(
         [FindExecutable(name='xacro'), ' ', franka_xacro_file, ' hand:=', load_gripper,
          ' robot_ip:=', robot_ip, ' use_fake_hardware:=', use_fake_hardware,
-         ' fake_sensor_commands:=', fake_sensor_commands]
+         ' fake_sensor_commands:=', fake_sensor_commands, ' ros2_control:=true', ' arm_id:=fr3']
     )
 
     # Spawn the Robot State Publisher
