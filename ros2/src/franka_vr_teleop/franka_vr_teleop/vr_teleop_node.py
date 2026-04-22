@@ -60,8 +60,11 @@ class VRTeleopNode(Node):
                     else:
                         # Dead-man switch: we stop sending new poses if tracking is lost,
                         # robot stays at last pose
-                        pass
+                        self.get_logger().info("Packet received, but tracking is LOST (Dead-man switch active)", throttle_duration_sec=2.0)
+                else:
+                    self.get_logger().warn(f"Received malformed UDP packet of size {len(data)}", throttle_duration_sec=2.0)
             except socket.timeout:
+                self.get_logger().info("Waiting for UDP packets... (None received)", throttle_duration_sec=2.0)
                 continue
             except Exception as e:
                 self.get_logger().error(f"UDP Error: {e}")
