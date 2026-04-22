@@ -16,10 +16,10 @@ class VRTeleopNode(Node):
         super().__init__('vr_teleop_node')
         
         # Publish to the Cartesian Controller's expected topic
-        self.pose_pub = self.create_publisher(PoseStamped, 'cartesian_impedance_example_controller/equilibrium_pose', 10)
+        self.pose_pub = self.create_publisher(PoseStamped, '/cartesian_impedance_example_controller/equilibrium_pose', 10)
         
         # Publish to the standard Gripper client topic
-        self.gripper_pub = self.create_publisher(Float32, 'gripper/gripper_client/target_gripper_width_percent', 10)
+        self.gripper_pub = self.create_publisher(Float32, '/gripper/gripper_client/target_gripper_width_percent', 10)
 
         # Safety / Smoothing internal state
         self.last_pose = None
