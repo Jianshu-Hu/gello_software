@@ -3,6 +3,7 @@ import os
 from ament_index_python.packages import get_package_share_directory
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
+from launch.conditions import UnlessCondition
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.substitutions import Command, FindExecutable, LaunchConfiguration, PathJoinSubstitution
 from launch_ros.actions import Node
@@ -110,7 +111,7 @@ def generate_launch_description():
             controller_manager_node,
             franka_robot_state_broadcaster,
             # joint_state_broadcaster, # Unused initially if cartesian handles joints, but standard to keep
-            cartesian_controller,
+            cartesian_controller_spawner,
             vr_bridge_node
         ]
     )
