@@ -58,6 +58,7 @@ def generate_launch_description():
         package='controller_manager',
         executable='spawner',
         arguments=['franka_robot_state_broadcaster'],
+        condition=UnlessCondition(use_fake_hardware),
         output='screen',
     )
 
@@ -70,10 +71,10 @@ def generate_launch_description():
     )
 
     # NEW: Spawn the Cartesian Controller instead of the Joint Impedance Controller
-    cartesian_controller = Node(
+    cartesian_controller_spawner = Node(
         package='controller_manager',
         executable='spawner',
-        arguments=['cartesian_impedance_example_controller'],
+        arguments=['cartesian_pose_example_controller'],
         output='screen',
     )
 
