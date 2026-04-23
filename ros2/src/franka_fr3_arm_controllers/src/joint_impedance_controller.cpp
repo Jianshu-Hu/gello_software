@@ -326,7 +326,12 @@ void JointImpedanceController::enterHoldMode_() {
 
 void JointImpedanceController::resetCommandTracking_(const rclcpp::Time& reference_time) {
   gello_position_values_valid_ = false;
-  gello_position_values_.fill(0.0);
+
+  // Initialize with current pose instead of zeros
+  for (int i = 0; i < 7; ++i) {
+    gello_position_values_[i] = q_(i);
+  }
+
   last_joint_state_time_ = reference_time;
   command_accept_time_ = reference_time;
 }
