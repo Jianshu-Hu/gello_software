@@ -34,8 +34,8 @@ FR3_JOINT_NAMES = [
 ]
 NUM_JOINTS = 7
 
-# FR3 home position
-HOME_Q = np.array([0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7853])
+# FR3 home position (User specified initial state)
+HOME_Q = np.array([0.0, 0.5, 0.6, -1.9, -1.0, 1.7, 1.0])
 
 # Position scaling (1.0 = 1-to-1 metric mapping)
 VR_POSITION_SCALE = 1.0
