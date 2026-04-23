@@ -16,7 +16,7 @@ import struct
 import threading
 
 import numpy as np
-from scipy.spatial.transform import Rotation as R
+import transforms3d
 from dm_control import mjcf
 from dm_control.utils.inverse_kinematics import qpos_from_site_pose
 
@@ -217,8 +217,8 @@ class VRTeleopNode(Node):
         vr_pos = np.array([px, py, pz])
 
         # Convert VR quaternion to rotation matrix
-        # scipy uses [x, y, z, w] order
-        vr_rot = R.from_quat([qx, qy, qz, qw]).as_matrix()
+        # UDP sends (x,y,z,w), transforms3d uses (w,x,y,z)
+        vr_rot = transforms3d.quaternions.quat2mat([qw, qx, qy, qz])
 
         # ── First-press activation (relative control) ─────────
         if not self.control_active:
@@ -273,9 +273,8 @@ class VRTeleopNode(Node):
         self.last_target_pos = target_pos.copy()
 
         # Convert target rotation to quaternion for MuJoCo IK
-        # MuJoCo uses (w, x, y, z) format
-        q_xyzw = R.from_matrix(target_rot).as_quat()  # [x, y, z, w]
-        target_quat = np.array([q_xyzw[3], q_xyzw[0], q_xyzw[1], q_xyzw[2]])
+        # transforms3d.mat2quat returns (w,x,y,z) — same as MuJoCo
+        target_quat = transforms3d.quaternions.mat2quat(target_rot)
 
         # ── Solve IK ──────────────────────────────────────────
         # Seed the physics with current robot state for warm start

@@ -7,6 +7,15 @@ WITHOUT ROS 2. This verifies:
   2. IK solving via dm_control + MuJoCo
   3. Joint angle output
 
+Quaternion conventions used in this codebase:
+  - Bridge / UDP packets:   (x, y, z, w)
+  - MuJoCo / dm_control:    (w, x, y, z)
+  - transforms3d:           (w, x, y, z)
+
+We use transforms3d for quaternion ↔ rotation-matrix conversions.
+This is the same library used throughout the GELLO codebase
+(via transforms3d._gohlketransforms in conversion_utils.py).
+
 Usage:
   Terminal 1:  python test_vr_ik_pipeline.py
   Terminal 2:  python bridge.py --in-protocol tcp --in-port 8000 --out-port 9876
@@ -20,7 +29,7 @@ import struct
 import time
 
 import numpy as np
-from scipy.spatial.transform import Rotation as R
+import transforms3d
 from dm_control import mjcf
 from dm_control.utils.inverse_kinematics import qpos_from_site_pose
 
@@ -42,15 +51,21 @@ HOME_Q = np.array([0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7853])
 VR_POSITION_SCALE = 1.0
 
 
-def _quat_to_rotmat(qx, qy, qz, qw):
-    """Convert quaternion (x,y,z,w) to 3×3 rotation matrix."""
-    return R.from_quat([qx, qy, qz, qw]).as_matrix()
+def _quat_xyzw_to_rotmat(qx, qy, qz, qw):
+    """Convert quaternion (x,y,z,w) from UDP to 3×3 rotation matrix.
+
+    transforms3d uses (w,x,y,z) order, so we reorder the input.
+    """
+    return transforms3d.quaternions.quat2mat([qw, qx, qy, qz])
 
 
 def _rotmat_to_quat_wxyz(rotmat):
-    """Convert 3×3 rotation matrix to quaternion in MuJoCo (w,x,y,z) order."""
-    q = R.from_matrix(rotmat).as_quat()  # returns [x, y, z, w]
-    return np.array([q[3], q[0], q[1], q[2]])  # -> [w, x, y, z]
+    """Convert 3×3 rotation matrix to quaternion in MuJoCo (w,x,y,z) order.
+
+    transforms3d.quaternions.mat2quat returns (w,x,y,z) which matches
+    MuJoCo's convention directly — no reordering needed.
+    """
+    return transforms3d.quaternions.mat2quat(rotmat)
 
 
 def _find_fr3_xml():
@@ -155,7 +170,7 @@ def main():
 
             # VR pose
             vr_pos = np.array([r_px, r_py, r_pz])
-            vr_rot = _quat_to_rotmat(r_qx, r_qy, r_qz, r_qw)
+            vr_rot = _quat_xyzw_to_rotmat(r_qx, r_qy, r_qz, r_qw)
 
             # ── First-press: capture reference ────────────────
             if not control_active:
@@ -203,6 +218,7 @@ def main():
             last_target_pos = target_pos.copy()
 
             # ── IK Solve ──────────────────────────────────────
+            # transforms3d.mat2quat returns (w,x,y,z) which matches MuJoCo
             target_quat = _rotmat_to_quat_wxyz(target_rot)
 
             physics.data.qpos[:NUM_JOINTS] = current_q
