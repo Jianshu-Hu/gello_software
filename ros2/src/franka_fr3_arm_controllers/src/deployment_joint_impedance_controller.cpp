@@ -99,7 +99,7 @@ void DeploymentJointImpedanceController::jointStateCallback_(
     return;
   }
 
-  const auto msg_time = rclcpp::Time(msg.header.stamp);
+  rclcpp::Time msg_time(msg.header.stamp, command_accept_time_.get_clock_type());
   if (msg_time < command_accept_time_) {
     RCLCPP_WARN_THROTTLE(
         get_node()->get_logger(), *get_node()->get_clock(), 2000,
@@ -170,7 +170,7 @@ CallbackReturn DeploymentJointImpedanceController::on_configure(
       get_node()->create_publisher<sensor_msgs::msg::JointState>("franka/commanded_joint_states",
                                                                  10);
   deployment_enable_service_ = get_node()->create_service<std_srvs::srv::SetBool>(
-      "joint_impedance_controller/set_deployment_enabled",
+      "~/set_deployment_enabled",
       [this](const std::shared_ptr<std_srvs::srv::SetBool::Request>& request,
              std::shared_ptr<std_srvs::srv::SetBool::Response> response) {
         handleSetDeploymentEnabled_(request, response);
