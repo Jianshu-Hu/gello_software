@@ -345,6 +345,25 @@ class VRTeleopNode(Node):
                 # Still waiting for robot to report its state
                 return
 
+        # ── Debug Logging (Throttle to 1Hz) ──────────────────
+        now = self.get_clock().now()
+        if not hasattr(self, '_last_debug_time'): self._last_debug_time = now
+        
+        if (now - self._last_debug_time).nanoseconds > 1e9: # Every 1s
+            status = "ACTIVE" if self.control_active else "IDLE"
+            q_out = q_goal if self.control_active else self.startup_q
+            q_str = [round(x, 3) for x in q_out.tolist()] if q_out is not None else "None"
+            vr_status = "CONNECTED" if (now - self.last_udp_time).nanoseconds < 1e9 else "WAITING"
+            
+            self.get_logger().info(
+                f"\n--- VR TELEOP STATUS ---\n"
+                f"Mode: {status} | VR Stream: {vr_status}\n"
+                f"Startup Q (Home): {self.startup_q.tolist() if self.startup_q is not None else 'WAITING'}\n"
+                f"Current Publish: {q_str}\n"
+                f"------------------------"
+            )
+            self._last_debug_time = now
+
         self.joint_pub.publish(msg)
 
         # ── Publish gripper command ───────────────────────────
