@@ -37,8 +37,8 @@ NUM_JOINTS = 7
 # FR3 home position
 HOME_Q = np.array([0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7853])
 
-# Position scaling (0.8 means 10cm hand move = 8cm robot move)
-VR_POSITION_SCALE = 0.8
+# Position scaling (1.0 = 1-to-1 metric mapping)
+VR_POSITION_SCALE = 1.0
 
 
 def _quat_xyzw_to_rotmat(qx, qy, qz, qw):
@@ -131,6 +131,15 @@ def main():
             vr_rot = _quat_xyzw_to_rotmat(vals[3], vals[4], vals[5], vals[6])
             grasp = vals[7]
             tracked = vals[8] > 0.5
+
+            # Clutching logic: Only move if trigger is held
+            if grasp < 0.5:
+                if control_active:
+                    print("[INFO] Trigger released — Holding position (Clutching)")
+                    control_active = False
+                    reference_vr_pos = None
+                    last_target_pos = None # Reset smoothing
+                continue
 
             if not tracked:
                 control_active = False

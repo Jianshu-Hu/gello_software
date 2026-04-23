@@ -57,7 +57,7 @@ VR_TO_ROBOT = np.eye(4)
 VR_ORIGIN_OFFSET = np.array([0.4, 0.0, 0.4])  # meters — roughly center of FR3 workspace
 
 # Position scaling: VR hand movement range → robot workspace range
-VR_POSITION_SCALE = 0.8  # 10cm hand move = 8cm robot move
+VR_POSITION_SCALE = 1.0  # 1-to-1 metric mapping
 
 
 class VRTeleopNode(Node):
@@ -174,6 +174,15 @@ class VRTeleopNode(Node):
                     r_qx, r_qy, r_qz, r_qw = vals[3], vals[4], vals[5], vals[6]
                     r_grasp = vals[7]
                     r_tracked = vals[8] > 0.5
+
+                    # Clutching logic: Only move if trigger is held
+                    if r_grasp < 0.5:
+                        if self.control_active:
+                            self.get_logger().info("Trigger released — Holding position (Clutching)")
+                            self.control_active = False
+                            self.reference_vr_pos = None
+                            self.last_target_pos = None
+                        continue
 
                     if r_tracked:
                         self._process_vr_pose(
