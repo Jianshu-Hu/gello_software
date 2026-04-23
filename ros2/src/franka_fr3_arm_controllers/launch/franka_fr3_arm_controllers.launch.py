@@ -49,16 +49,12 @@ def generate_robot_nodes(context):
             prefix="franka_fr3_arm_controllers_",
             delete=False,
         )
-        yaml.safe_dump(
-            {
-                "/**": {
-                    "joint_impedance_controller": {
-                        "ros__parameters": {"deployment_mode": deployment_mode_enabled}
-                    }
-                }
-            },
-            override_file,
+        controller_name = (
+            "deployment_joint_impedance_controller"
+            if deployment_mode_enabled
+            else "joint_impedance_controller"
         )
+        yaml.safe_dump({}, override_file)
         override_file.flush()
         override_file.close()
         nodes.append(
@@ -93,7 +89,7 @@ def generate_robot_nodes(context):
                 executable="spawner",
                 namespace=namespace,
                 arguments=[
-                    "joint_impedance_controller",
+                    controller_name,
                     "--controller-manager-timeout",
                     "30",
                     "--param-file",
@@ -138,7 +134,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "deployment_mode",
                 default_value="false",
-                description="Enable deployment-mode gating for joint_impedance_controller.",
+                description="Load the deployment controller instead of the teleoperation controller.",
             ),
             OpaqueFunction(function=generate_robot_nodes),
         ]

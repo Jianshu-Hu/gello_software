@@ -28,8 +28,10 @@ lerobot_data_bridge:
     right_deployment_joint_command_topic: "/right/gello/joint_states"
     left_deployment_gripper_command_topic: "/left/gripper/gripper_client/target_gripper_width_percent"
     right_deployment_gripper_command_topic: "/right/gripper/gripper_client/target_gripper_width_percent"
-    left_deployment_enable_service: "/left/joint_impedance_controller/set_deployment_enabled"
-    right_deployment_enable_service: "/right/joint_impedance_controller/set_deployment_enabled"
+    left_deployment_joint_command_topic: "/left/deployment/joint_states"
+    right_deployment_joint_command_topic: "/right/deployment/joint_states"
+    left_deployment_enable_service: "/left/deployment_joint_impedance_controller/set_deployment_enabled"
+    right_deployment_enable_service: "/right/deployment_joint_impedance_controller/set_deployment_enabled"
 
     camera_1_enabled: true
     camera_1_name: "cam_left"

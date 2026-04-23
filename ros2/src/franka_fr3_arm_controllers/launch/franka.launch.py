@@ -70,6 +70,7 @@
 ############################################################################
 
 
+import tempfile
 import xacro
 from launch import LaunchDescription
 from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
@@ -105,6 +106,7 @@ def generate_robot_nodes(context):
 
     namespace = LaunchConfiguration("namespace").perform(context)
     arm_id = LaunchConfiguration("arm_id").perform(context)
+    arm_prefix = LaunchConfiguration("arm_prefix").perform(context)
     load_gripper = LaunchConfiguration("load_gripper").perform(context)
     controllers_yaml = PathJoinSubstitution(
         [FindPackageShare("franka_fr3_arm_controllers"), "config", "controllers.yaml"]
@@ -113,15 +115,22 @@ def generate_robot_nodes(context):
     joint_sources_str = LaunchConfiguration("joint_sources").perform(context)
     joint_sources = joint_sources_str.split(",")
     joint_state_rate = int(LaunchConfiguration("joint_state_rate").perform(context))
-    deployment_mode = LaunchConfiguration("deployment_mode").perform(context).lower() == "true"
-    controller_overrides = {
-        "/**": {
-            "joint_impedance_controller": {
-                "ros__parameters": {"deployment_mode": deployment_mode}
-            }
-        }
-    }
-
+    broadcaster_override_file = tempfile.NamedTemporaryFile(
+        mode="w",
+        suffix=f"_{namespace}_franka_robot_state_broadcaster.yaml",
+        prefix="franka_fr3_arm_controllers_",
+        delete=False,
+    )
+    broadcaster_override_file.write(
+        f"""/**:
+  franka_robot_state_broadcaster:
+    ros__parameters:
+      robot_type: "{arm_id}"
+      arm_prefix: "{arm_prefix}"
+"""
+    )
+    broadcaster_override_file.flush()
+    broadcaster_override_file.close()
     nodes = [
         Node(
             package="robot_state_publisher",
@@ -136,7 +145,6 @@ def generate_robot_nodes(context):
             namespace=namespace,
             parameters=[
                 controllers_yaml,
-                controller_overrides,
                 {"robot_description": robot_description},
                 {"arm_id": arm_id},
                 {"namespace": namespace},
@@ -175,8 +183,11 @@ def generate_robot_nodes(context):
             package="controller_manager",
             executable="spawner",
             namespace=namespace,
-            arguments=["franka_robot_state_broadcaster"],
-            parameters=[{"arm_id": LaunchConfiguration("arm_id").perform(context)}],
+            arguments=[
+                "franka_robot_state_broadcaster",
+                "--param-file",
+                broadcaster_override_file.name,
+            ],
             condition=UnlessCondition(
                 PythonExpression(
                     [
@@ -256,7 +267,7 @@ def generate_launch_description():
         DeclareLaunchArgument(
             "deployment_mode",
             default_value="false",
-            description="Enable deployment-mode gating for joint_impedance_controller.",
+            description="Load the deployment controller instead of the teleoperation controller.",
         ),
     ]
 

@@ -302,14 +302,16 @@ class LeRobotDataBridge(Node):
             "left_gripper_action_topic",
             "/left/gripper/gripper_client/target_gripper_width_percent",
         )
-        self.declare_parameter("left_deployment_joint_command_topic", "/left/gello/joint_states")
+        self.declare_parameter(
+            "left_deployment_joint_command_topic", "/left/deployment/joint_states"
+        )
         self.declare_parameter(
             "left_deployment_gripper_command_topic",
             "/left/gripper/gripper_client/target_gripper_width_percent",
         )
         self.declare_parameter(
             "left_deployment_enable_service",
-            "/left/joint_impedance_controller/set_deployment_enabled",
+            "/left/deployment_joint_impedance_controller/set_deployment_enabled",
         )
 
         self.declare_parameter("right_robot_joint_state_topic", "/right/franka/joint_states")
@@ -321,14 +323,16 @@ class LeRobotDataBridge(Node):
             "right_gripper_action_topic",
             "/right/gripper/gripper_client/target_gripper_width_percent",
         )
-        self.declare_parameter("right_deployment_joint_command_topic", "/right/gello/joint_states")
+        self.declare_parameter(
+            "right_deployment_joint_command_topic", "/right/deployment/joint_states"
+        )
         self.declare_parameter(
             "right_deployment_gripper_command_topic",
             "/right/gripper/gripper_client/target_gripper_width_percent",
         )
         self.declare_parameter(
             "right_deployment_enable_service",
-            "/right/joint_impedance_controller/set_deployment_enabled",
+            "/right/deployment_joint_impedance_controller/set_deployment_enabled",
         )
 
         for idx, default_name in enumerate(["cam_left", "cam_front", "cam_right"], start=1):
@@ -486,11 +490,11 @@ class LeRobotDataBridge(Node):
         for arm_name, client in clients.items():
             request = SwitchController.Request()
             if active:
-                request.activate_controllers = ["joint_impedance_controller"]
+                request.activate_controllers = ["deployment_joint_impedance_controller"]
                 request.deactivate_controllers = []
             else:
                 request.activate_controllers = []
-                request.deactivate_controllers = ["joint_impedance_controller"]
+                request.deactivate_controllers = ["deployment_joint_impedance_controller"]
             request.strictness = SwitchController.Request.STRICT
             request.activate_asap = True
             futures.append((arm_name, client.srv_name, client.call_async(request)))

@@ -3,7 +3,14 @@
         type="franka_fr3_arm_controllers::JointImpedanceController"
         base_class_type="controller_interface::ControllerInterface">
         <description>
-            The JointImpedanceController single arm controller for gello
+            Teleoperation joint impedance controller driven by gello joint states.
+        </description>
+    </class>
+    <class name="franka_fr3_arm_controllers/DeploymentJointImpedanceController"
+        type="franka_fr3_arm_controllers::DeploymentJointImpedanceController"
+        base_class_type="controller_interface::ControllerInterface">
+        <description>
+            Deployment joint impedance controller driven by deployment joint targets.
         </description>
     </class>
 </library>

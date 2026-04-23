@@ -18,7 +18,9 @@
 #include <Eigen/Eigen>
 #include <controller_interface/controller_interface.hpp>
 #include <rclcpp/rclcpp.hpp>
+#include <rclcpp_lifecycle/state.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
+#include <std_srvs/srv/set_bool.hpp>
 #include <string>
 #include "franka_fr3_arm_controllers/motion_generator.hpp"
 
@@ -26,10 +28,7 @@ using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface
 
 namespace franka_fr3_arm_controllers {
 
-/**
- * Controller to move the robot to a desired joint position.
- */
-class JointImpedanceController : public controller_interface::ControllerInterface {
+class DeploymentJointImpedanceController : public controller_interface::ControllerInterface {
  public:
   using Vector7d = Eigen::Matrix<double, 7, 1>;
   [[nodiscard]] controller_interface::InterfaceConfiguration command_interface_configuration()
@@ -54,18 +53,21 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   Vector7d d_gains_;
   Vector7d hold_position_;
   double k_alpha_;
+  double command_timeout_sec_{0.5};
   bool move_to_start_position_finished_{false};
   bool motion_generator_initialized_{false};
   bool hold_position_initialized_{false};
+  bool deployment_enabled_{false};
+  bool command_values_valid_{false};
   rclcpp::Time start_time_;
   rclcpp::Time command_accept_time_;
+  rclcpp::Time last_command_time_;
   std::unique_ptr<MotionGenerator> motion_generator_;
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscriber_ = nullptr;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr commanded_joint_state_publisher_ =
       nullptr;
-  bool gello_position_values_valid_ = false;
-  std::array<double, 7> gello_position_values_{0, 0, 0, 0, 0, 0, 0};
-  rclcpp::Time last_joint_state_time_;
+  rclcpp::Service<std_srvs::srv::SetBool>::SharedPtr deployment_enable_service_ = nullptr;
+  std::array<double, 7> command_values_{0, 0, 0, 0, 0, 0, 0};
   std::array<std::string, 7> joint_names_;
 
   Vector7d calculateTauDGains_(const Vector7d& q_goal);
@@ -73,8 +75,14 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   bool initializeMotionGenerator_();
   void publishCommandedJointState_(const Vector7d& q_goal);
   void updateJointStates_();
-  void validateGelloPositions_(const sensor_msgs::msg::JointState& msg);
+  bool commandValuesAreFresh_() const;
+  void holdCurrentPosition_();
+  void publishHoldPosition_();
   void resetCommandTracking_(const rclcpp::Time& reference_time);
+  void setDeploymentEnabled_(bool enabled);
+  void handleSetDeploymentEnabled_(
+      const std::shared_ptr<std_srvs::srv::SetBool::Request>& request,
+      std::shared_ptr<std_srvs::srv::SetBool::Response> response);
   void jointStateCallback_(const sensor_msgs::msg::JointState msg);
 };
 

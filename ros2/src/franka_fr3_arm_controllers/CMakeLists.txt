@@ -42,6 +42,7 @@ add_library(
         ${PROJECT_NAME}
         SHARED
         src/joint_impedance_controller.cpp
+        src/deployment_joint_impedance_controller.cpp
         src/motion_generator.cpp)
 target_include_directories(
         ${PROJECT_NAME}

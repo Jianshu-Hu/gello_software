@@ -9,6 +9,9 @@
       joint_impedance_controller:
         type: franka_fr3_arm_controllers/JointImpedanceController
 
+      deployment_joint_impedance_controller:
+        type: franka_fr3_arm_controllers/DeploymentJointImpedanceController
+
       joint_state_broadcaster:
         type: joint_state_broadcaster/JointStateBroadcaster
 
@@ -19,6 +22,28 @@
   joint_impedance_controller:
     ros__parameters:
       k_alpha: 0.99
+      k_gains:
+        - 240.0
+        - 240.0
+        - 240.0
+        - 240.0
+        - 100.0
+        - 60.0
+        - 20.0
+      d_gains:
+        - 20.0
+        - 20.0
+        - 20.0
+        - 10.0
+        - 10.0
+        - 10.0
+        - 5.0
+
+/**:
+  deployment_joint_impedance_controller:
+    ros__parameters:
+      k_alpha: 0.99
+      command_timeout_sec: 0.5
       k_gains:
         - 240.0
         - 240.0
