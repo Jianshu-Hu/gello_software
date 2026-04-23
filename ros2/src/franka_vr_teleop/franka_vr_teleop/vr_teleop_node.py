@@ -103,6 +103,7 @@ class VRTeleopNode(Node):
         self.alpha_rot = 0.5       # EMA smoothing factor for rotation
         self.max_delta_pos = 0.02  # max 2 cm per IK cycle
         self.last_q_goal = None    # last successfully solved joint angles
+        self.last_grasp = 0.0      # last received grasp value
 
         # ── Control mode state ─────────────────────────────────────
         self.control_active = False
@@ -123,6 +124,11 @@ class VRTeleopNode(Node):
 
         self.thread = threading.Thread(target=self._udp_loop, daemon=True)
         self.thread.start()
+
+        # ── Heartbeat Timer (100Hz) ───────────────────────────────
+        # This keeps the robot 'fed' even if no VR packets arrive,
+        # preventing the 'diving' behavior.
+        self.timer = self.create_timer(0.01, self._timer_cb)
 
     # ── Locate the FR3 MuJoCo XML ─────────────────────────────────
     @staticmethod
@@ -174,6 +180,7 @@ class VRTeleopNode(Node):
                     r_qx, r_qy, r_qz, r_qw = vals[3], vals[4], vals[5], vals[6]
                     r_grasp = vals[7]
                     r_tracked = vals[8] > 0.5
+                    self.last_grasp = r_grasp
 
                     # Clutching logic: Only move if trigger is held
                     if r_grasp < 0.5:
@@ -312,33 +319,43 @@ class VRTeleopNode(Node):
         else:
             self.get_logger().warn(
                 "IK failed — holding last valid joint goal",
+        if ik_result.success:
+            self.last_q_goal = ik_result.qpos[:NUM_JOINTS].copy()
+        else:
+            self.get_logger().warn(
+                "IK failed — holding last valid joint goal",
                 throttle_duration_sec=1.0,
             )
-            if self.last_q_goal is not None:
-                q_goal = self.last_q_goal
-            else:
-                q_goal = self.current_q # Fallback to actual
-                if q_goal is None: return
+
+    # ── Heartbeat Timer Callback ──────────────────────────────
+    def _timer_cb(self):
+        """Always publish a goal to keep the robot from diving."""
+        if self.current_q is None:
+            return # Wait for robot to be online
+
+        # Goal selection
+        if self.control_active and self.last_q_goal is not None:
+            q_target = self.last_q_goal
+            grasp_val = self.last_grasp
+        else:
+            # Idle Mode: Goal is current physical state
+            q_target = self.current_q
+            grasp_val = 0.0
 
         # ── Publish joint states (mimic GelloPublisher) ───────
-        # In Idle mode (control_active=False), we publish current_q to keep robot still.
-        # In Active mode, we publish the IK-calculated q_goal.
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "fr3_link0"
         msg.name = FR3_JOINT_NAMES
-        if self.control_active:
-            msg.position = q_goal.tolist()
-        else:
-            msg.position = self.current_q.tolist()
+        msg.position = q_target.tolist()
         self.joint_pub.publish(msg)
 
         # ── Publish gripper command ───────────────────────────
         grip_msg = Float32()
         if self.control_active:
-            grip_msg.data = 1.0 - grasp  # 1.0=open, 0.0=closed
+            grip_msg.data = 1.0 - grasp_val
         else:
-            grip_msg.data = 1.0 # Keep open in idle
+            grip_msg.data = 1.0 # Open in idle
         self.gripper_pub.publish(grip_msg)
 
     # ── Cleanup ───────────────────────────────────────────────
