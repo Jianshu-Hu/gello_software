@@ -104,6 +104,7 @@ class VRTeleopNode(Node):
         self.max_delta_pos = 0.02  # max 2 cm per IK cycle
         self.last_q_goal = None    # last successfully solved joint angles
         self.startup_q = None      # The 'Home Base' captured at launch
+        self.last_udp_time = self.get_clock().now() # Track heartbeats
 
         # ── Control mode state ─────────────────────────────────────
         self.control_active = False
