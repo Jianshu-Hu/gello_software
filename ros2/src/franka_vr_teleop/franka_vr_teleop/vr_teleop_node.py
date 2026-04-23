@@ -317,22 +317,29 @@ class VRTeleopNode(Node):
             if self.last_q_goal is not None:
                 q_goal = self.last_q_goal
             else:
-                return  # no valid goal yet
+                q_goal = self.current_q # Fallback to actual
+                if q_goal is None: return
 
         # ── Publish joint states (mimic GelloPublisher) ───────
-        # IMPORTANT: Only publish if we are actively controlling to prevent startup jumps
+        # In Idle mode (control_active=False), we publish current_q to keep robot still.
+        # In Active mode, we publish the IK-calculated q_goal.
+        msg = JointState()
+        msg.header.stamp = self.get_clock().now().to_msg()
+        msg.header.frame_id = "fr3_link0"
+        msg.name = FR3_JOINT_NAMES
         if self.control_active:
-            msg = JointState()
-            msg.header.stamp = self.get_clock().now().to_msg()
-            msg.header.frame_id = "fr3_link0"
-            msg.name = FR3_JOINT_NAMES
             msg.position = q_goal.tolist()
-            self.joint_pub.publish(msg)
+        else:
+            msg.position = self.current_q.tolist()
+        self.joint_pub.publish(msg)
 
-            # ── Publish gripper command ───────────────────────────
-            grip_msg = Float32()
+        # ── Publish gripper command ───────────────────────────
+        grip_msg = Float32()
+        if self.control_active:
             grip_msg.data = 1.0 - grasp  # 1.0=open, 0.0=closed
-            self.gripper_pub.publish(grip_msg)
+        else:
+            grip_msg.data = 1.0 # Keep open in idle
+        self.gripper_pub.publish(grip_msg)
 
     # ── Cleanup ───────────────────────────────────────────────
     def destroy_node(self):
