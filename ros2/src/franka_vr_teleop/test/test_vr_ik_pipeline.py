@@ -20,7 +20,7 @@ import struct
 import time
 
 import numpy as np
-import quaternion as npq
+from scipy.spatial.transform import Rotation as R
 from dm_control import mjcf
 from dm_control.utils.inverse_kinematics import qpos_from_site_pose
 
@@ -42,12 +42,48 @@ HOME_Q = np.array([0.0, 0.0, 0.0, -1.57079, 0.0, 1.57079, -0.7853])
 VR_POSITION_SCALE = 1.0
 
 
+def _quat_to_rotmat(qx, qy, qz, qw):
+    """Convert quaternion (x,y,z,w) to 3×3 rotation matrix."""
+    return R.from_quat([qx, qy, qz, qw]).as_matrix()
+
+
+def _rotmat_to_quat_wxyz(rotmat):
+    """Convert 3×3 rotation matrix to quaternion in MuJoCo (w,x,y,z) order."""
+    q = R.from_matrix(rotmat).as_quat()  # returns [x, y, z, w]
+    return np.array([q[3], q[0], q[1], q[2]])  # -> [w, x, y, z]
+
+
+def _find_fr3_xml():
+    """Locate the fr3.xml model."""
+    candidates = [
+        # Robot PC path
+        os.path.expanduser(
+            "~/real-exp-work-branch/gello_software/third_party/"
+            "mujoco_menagerie/franka_fr3/fr3.xml"
+        ),
+        # Dev machine path
+        os.path.expanduser(
+            "~/real_experiment_on _franka/gello_software/third_party/"
+            "mujoco_menagerie/franka_fr3/fr3.xml"
+        ),
+        # Relative to this script
+        os.path.join(
+            os.path.dirname(__file__), "..", "..", "..", "..", "..",
+            "third_party", "mujoco_menagerie", "franka_fr3", "fr3.xml"
+        ),
+    ]
+    for p in candidates:
+        p = os.path.abspath(p)
+        if os.path.isfile(p):
+            return p
+    raise FileNotFoundError(
+        f"Cannot find fr3.xml. Searched: {candidates}"
+    )
+
+
 def main():
     # ── Load FR3 MuJoCo model ─────────────────────────────────
-    xml_path = os.path.expanduser(
-        "~/real_experiment_on _franka/gello_software/third_party/"
-        "mujoco_menagerie/franka_fr3/fr3.xml"
-    )
+    xml_path = _find_fr3_xml()
     print(f"[INIT] Loading FR3 model from: {xml_path}")
     physics = mjcf.Physics.from_xml_path(xml_path)
 
@@ -119,8 +155,7 @@ def main():
 
             # VR pose
             vr_pos = np.array([r_px, r_py, r_pz])
-            vr_quat = npq.quaternion(r_qw, r_qx, r_qy, r_qz)
-            vr_rot = npq.as_rotation_matrix(vr_quat)
+            vr_rot = _quat_to_rotmat(r_qx, r_qy, r_qz, r_qw)
 
             # ── First-press: capture reference ────────────────
             if not control_active:
@@ -168,9 +203,7 @@ def main():
             last_target_pos = target_pos.copy()
 
             # ── IK Solve ──────────────────────────────────────
-            target_quat = npq.as_float_array(
-                npq.from_rotation_matrix(target_rot)
-            )  # [w, x, y, z]
+            target_quat = _rotmat_to_quat_wxyz(target_rot)
 
             physics.data.qpos[:NUM_JOINTS] = current_q
             physics.step()
