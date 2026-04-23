@@ -1,129 +1,335 @@
-import rclpy
-from rclpy.node import Node
-from geometry_msgs.msg import PoseStamped
-from std_msgs.msg import Float32
+"""VR Teleop Node — IK-based Joint Command Publisher.
+
+Receives VR controller pose data via UDP (from bridge.py), solves Inverse
+Kinematics using dm_control + MuJoCo to produce 7 joint angles for the
+Franka FR3, then publishes those angles to ``gello/joint_states`` so the
+existing JointImpedanceController can track them.
+
+This node replaces the physical GELLO device: instead of reading joint
+encoders from a puppet arm, it computes target joints from the VR hand pose.
+"""
+
+import os
+import math
 import socket
 import struct
 import threading
-import time
-import math
 
+import numpy as np
+import quaternion as npq               # numpy-quaternion
+from dm_control import mjcf
+from dm_control.utils.inverse_kinematics import qpos_from_site_pose
+
+import rclpy
+from rclpy.node import Node
+from sensor_msgs.msg import JointState
+from std_msgs.msg import Float32
+
+# ---------- UDP packet layout (matches bridge.py) ----------
+# 18 × float32 = 72 bytes
+# R_pos(3), R_quat(4), R_grasp(1), R_tracked(1),
+# L_pos(3), L_quat(4), L_grasp(1), L_tracked(1)
 _PACK_FMT = "<18f"
 _PACK_SIZE = struct.calcsize(_PACK_FMT)
 
-class VRTeleopNode(Node):
-    def __init__(self):
-        super().__init__('vr_teleop_node')
-        
-        # Publish to the Cartesian Controller's expected topic
-        self.pose_pub = self.create_publisher(PoseStamped, '/cartesian_pose_example_controller/target_pose', 10)
-        
-        # Publish to the standard Gripper client topic
-        self.gripper_pub = self.create_publisher(Float32, '/gripper/gripper_client/target_gripper_width_percent', 10)
+# ---------- Joint names (must match JointImpedanceController) ----------
+FR3_JOINT_NAMES = [
+    "fr3_joint1",
+    "fr3_joint2",
+    "fr3_joint3",
+    "fr3_joint4",
+    "fr3_joint5",
+    "fr3_joint6",
+    "fr3_joint7",
+]
+NUM_JOINTS = 7
 
-        # Safety / Smoothing internal state
-        self.last_pose = None
-        self.alpha_pos = 0.2  # EMA smoothing factor for position
-        self.alpha_rot = 0.5  # EMA smoothing factor for rotation
-        self.max_delta_pos = 0.05  # clamp max 5cm per update
-        
+# ---------- VR-to-Robot coordinate frame transform ----------
+# Bridge outputs right-handed Z-up: x=front, y=left, z=up
+# Franka base frame is also right-handed Z-up with x-forward
+# We start with identity and can adjust axes/offset after first test
+#
+# Format: 4×4 homogeneous transform
+VR_TO_ROBOT = np.eye(4)
+
+# Translation offset: maps VR origin to Franka workspace center
+# Adjust these after first test to calibrate
+VR_ORIGIN_OFFSET = np.array([0.4, 0.0, 0.4])  # meters — roughly center of FR3 workspace
+
+# Position scaling: VR hand movement range → robot workspace range
+VR_POSITION_SCALE = 1.0
+
+
+class VRTeleopNode(Node):
+    """ROS 2 node: VR UDP → IK → /gello/joint_states."""
+
+    def __init__(self):
+        super().__init__("vr_teleop_node")
+
+        # ── Publishers ──────────────────────────────────────────────
+        self.joint_pub = self.create_publisher(
+            JointState, "gello/joint_states", 10
+        )
+        self.gripper_pub = self.create_publisher(
+            Float32, "gripper/gripper_client/target_gripper_width_percent", 10
+        )
+
+        # ── Subscribe to actual robot joint states (warm-start seed) ──
+        self.current_q = None  # filled by subscriber
+        self.joint_sub = self.create_subscription(
+            JointState, "/joint_states", self._joint_state_cb, 10
+        )
+
+        # ── Load MuJoCo model for IK ───────────────────────────────
+        fr3_xml = self._find_fr3_xml()
+        self.get_logger().info(f"Loading MuJoCo model from {fr3_xml}")
+        self.physics = mjcf.Physics.from_xml_path(fr3_xml)
+        self.site_name = "attachment_site"
+
+        # Verify IK site exists
+        site_names = [
+            self.physics.model.id2name(i, "site")
+            for i in range(self.physics.model.nsite)
+        ]
+        assert self.site_name in site_names, (
+            f"Site '{self.site_name}' not found in model. Available: {site_names}"
+        )
+        self.get_logger().info(f"IK target site: {self.site_name}")
+
+        # ── Safety / smoothing state ───────────────────────────────
+        self.last_target_pos = None
+        self.last_target_quat = None
+        self.alpha_pos = 0.3       # EMA smoothing factor for position
+        self.alpha_rot = 0.5       # EMA smoothing factor for rotation
+        self.max_delta_pos = 0.02  # max 2 cm per IK cycle
+        self.last_q_goal = None    # last successfully solved joint angles
+
+        # ── Control mode state ─────────────────────────────────────
+        self.control_active = False
+        self.reference_vr_pos = None
+        self.reference_vr_rot = None
+        self.reference_robot_pos = None
+        self.reference_robot_rot = None
+
+        # ── UDP receiver ───────────────────────────────────────────
         self.udp_port = 9876
         self.running = True
         self.sock = socket.socket(socket.AF_INET, socket.SOCK_DGRAM)
         self.sock.bind(("0.0.0.0", self.udp_port))
         self.sock.settimeout(1.0)
-        
-        self.get_logger().info(f"VR Teleop Node started. Listening on UDP port {self.udp_port}")
+        self.get_logger().info(
+            f"VR Teleop IK Node started. Listening on UDP port {self.udp_port}"
+        )
 
-        self.thread = threading.Thread(target=self.udp_loop, daemon=True)
+        self.thread = threading.Thread(target=self._udp_loop, daemon=True)
         self.thread.start()
 
-    def clamp(self, val, min_v, max_v):
-        return max(min_v, min(max_v, val))
+    # ── Locate the FR3 MuJoCo XML ─────────────────────────────────
+    @staticmethod
+    def _find_fr3_xml() -> str:
+        """Walk up from this file to find the fr3.xml MuJoCo model."""
+        # Try relative to the workspace root
+        candidates = [
+            # From the installed ROS workspace
+            os.path.expanduser(
+                "~/real-exp-work-branch/gello_software/third_party/"
+                "mujoco_menagerie/franka_fr3/fr3.xml"
+            ),
+            # From the dev machine workspace
+            os.path.join(
+                os.path.dirname(__file__), "..", "..", "..", "..", "..",
+                "third_party", "mujoco_menagerie", "franka_fr3", "fr3.xml"
+            ),
+        ]
+        for p in candidates:
+            p = os.path.abspath(p)
+            if os.path.isfile(p):
+                return p
+        raise FileNotFoundError(
+            f"Cannot find fr3.xml. Searched: {candidates}"
+        )
 
-    def udp_loop(self):
+    # ── Joint state subscriber callback ───────────────────────────
+    def _joint_state_cb(self, msg: JointState):
+        """Cache the latest robot joint positions for IK warm-start."""
+        if len(msg.position) >= NUM_JOINTS:
+            # Joint states might arrive in any order; reorder by name
+            q = [0.0] * NUM_JOINTS
+            for i, name in enumerate(msg.name):
+                if name in FR3_JOINT_NAMES:
+                    idx = FR3_JOINT_NAMES.index(name)
+                    q[idx] = msg.position[i]
+            self.current_q = np.array(q)
+
+    # ── UDP receive loop ──────────────────────────────────────────
+    def _udp_loop(self):
         while self.running and rclpy.ok():
             try:
                 data, _ = self.sock.recvfrom(4096)
                 if len(data) == _PACK_SIZE:
-                    unpacked = struct.unpack(_PACK_FMT, data)
-                    
-                    # Layout: R_pos(3), R_quat(4), R_grasp, R_tracked, L_pos(3), L_quat(4), L_grasp, L_tracked
-                    # Assuming we are controlling right arm for this instance
-                    r_px, r_py, r_pz = unpacked[0], unpacked[1], unpacked[2]
-                    r_qx, r_qy, r_qz, r_qw = unpacked[3], unpacked[4], unpacked[5], unpacked[6]
-                    r_grasp = unpacked[7]
-                    r_tracked = unpacked[8] > 0.5
+                    vals = struct.unpack(_PACK_FMT, data)
+
+                    # Right hand data
+                    r_px, r_py, r_pz = vals[0], vals[1], vals[2]
+                    r_qx, r_qy, r_qz, r_qw = vals[3], vals[4], vals[5], vals[6]
+                    r_grasp = vals[7]
+                    r_tracked = vals[8] > 0.5
 
                     if r_tracked:
-                        self.process_target(r_px, r_py, r_pz, r_qx, r_qy, r_qz, r_qw, r_grasp)
+                        self._process_vr_pose(
+                            r_px, r_py, r_pz,
+                            r_qx, r_qy, r_qz, r_qw,
+                            r_grasp,
+                        )
                     else:
-                        # Dead-man switch: we stop sending new poses if tracking is lost,
-                        # robot stays at last pose
-                        self.get_logger().info("Packet received, but tracking is LOST (Dead-man switch active)", throttle_duration_sec=2.0)
+                        if self.control_active:
+                            self.get_logger().info(
+                                "VR tracking lost — holding position (dead-man switch)",
+                                throttle_duration_sec=2.0,
+                            )
+                            self.control_active = False
+                            self.reference_vr_pos = None
                 else:
-                    self.get_logger().warn(f"Received malformed UDP packet of size {len(data)}", throttle_duration_sec=2.0)
+                    self.get_logger().warn(
+                        f"Malformed UDP packet ({len(data)} bytes)",
+                        throttle_duration_sec=2.0,
+                    )
             except socket.timeout:
-                self.get_logger().info("Waiting for UDP packets... (None received)", throttle_duration_sec=2.0)
-                continue
+                self.get_logger().info(
+                    "Waiting for VR UDP packets…",
+                    throttle_duration_sec=5.0,
+                )
             except Exception as e:
-                self.get_logger().error(f"UDP Error: {e}")
+                self.get_logger().error(f"UDP error: {e}")
 
-    def process_target(self, px, py, pz, qx, qy, qz, qw, grasp):
-        # 1. Coordinate transformation for Franka Base (if needed from Bridge Frame to Robot Frame)
-        # Note: bridge.py already outputs in right-handed Z-up. 
-        # But we may need an offset or rotation to match Franka's fr3_link0.
-        # Let's apply a basic offset if necessary, or just use it as is if it's world calibrated.
-        # For safety, you normally apply an offset from an initial pose. Here we do raw.
-        tx, ty, tz = px, py, pz
-        
-        # 2. Safety: Velocity Clamping
-        if self.last_pose is not None:
-            dx = self.clamp(tx - self.last_pose['x'], -self.max_delta_pos, self.max_delta_pos)
-            dy = self.clamp(ty - self.last_pose['y'], -self.max_delta_pos, self.max_delta_pos)
-            dz = self.clamp(tz - self.last_pose['z'], -self.max_delta_pos, self.max_delta_pos)
-            
-            tx = self.last_pose['x'] + dx
-            ty = self.last_pose['y'] + dy
-            tz = self.last_pose['z'] + dz
-            
-            # 3. EMA Smoothing
-            tx = self.alpha_pos * tx + (1 - self.alpha_pos) * self.last_pose['x']
-            ty = self.alpha_pos * ty + (1 - self.alpha_pos) * self.last_pose['y']
-            tz = self.alpha_pos * tz + (1 - self.alpha_pos) * self.last_pose['z']
-        
-        self.last_pose = {'x': tx, 'y': ty, 'z': tz}
+    # ── Core VR → IK → Publish pipeline ──────────────────────────
+    def _process_vr_pose(self, px, py, pz, qx, qy, qz, qw, grasp):
+        """Convert a VR controller pose into joint angles and publish."""
 
-        # 4. Construct and Publisher PoseStamped
-        msg = PoseStamped()
+        # Need current robot state for IK seed and reference pose
+        if self.current_q is None:
+            self.get_logger().info(
+                "Waiting for /joint_states before starting IK…",
+                throttle_duration_sec=2.0,
+            )
+            return
+
+        vr_pos = np.array([px, py, pz])
+        vr_rot = np.array([
+            [1, 0, 0],
+            [0, 1, 0],
+            [0, 0, 1],
+        ], dtype=float)  # placeholder — will be replaced by quaternion
+
+        # Convert VR quaternion to rotation matrix
+        vr_quat = npq.quaternion(qw, qx, qy, qz)
+        vr_rot = npq.as_rotation_matrix(vr_quat)
+
+        # ── First-press activation (relative control) ─────────
+        if not self.control_active:
+            self.control_active = True
+            self.reference_vr_pos = vr_pos.copy()
+            self.reference_vr_rot = vr_rot.copy()
+
+            # Get current EE pose from FK using current_q
+            self.physics.data.qpos[:NUM_JOINTS] = self.current_q
+            self.physics.step()
+            self.reference_robot_pos = np.array(
+                self.physics.named.data.site_xpos[self.site_name]
+            ).copy()
+            self.reference_robot_rot = np.array(
+                self.physics.named.data.site_xmat[self.site_name]
+            ).reshape(3, 3).copy()
+
+            self.get_logger().info("VR control activated — reference pose captured")
+            return
+
+        # ── Compute delta from VR reference ───────────────────
+        delta_pos = (vr_pos - self.reference_vr_pos) * VR_POSITION_SCALE
+        delta_rot = vr_rot @ np.linalg.inv(self.reference_vr_rot)
+
+        # Apply VR-to-Robot frame transform to the delta
+        R_vr2robot = VR_TO_ROBOT[:3, :3]
+        delta_pos_robot = R_vr2robot @ delta_pos
+        delta_rot_robot = R_vr2robot @ delta_rot @ R_vr2robot.T
+
+        # Compute absolute target in robot frame
+        target_pos = self.reference_robot_pos + delta_pos_robot
+        target_rot = delta_rot_robot @ self.reference_robot_rot
+
+        # ── Safety: position clamping ─────────────────────────
+        if self.last_target_pos is not None:
+            diff = target_pos - self.last_target_pos
+            norm = np.linalg.norm(diff)
+            if norm > self.max_delta_pos:
+                diff = diff * (self.max_delta_pos / norm)
+                target_pos = self.last_target_pos + diff
+
+        # ── Safety: Z floor clamp ─────────────────────────────
+        target_pos[2] = max(target_pos[2], 0.05)
+
+        # ── EMA smoothing ─────────────────────────────────────
+        if self.last_target_pos is not None:
+            target_pos = (
+                self.alpha_pos * target_pos
+                + (1 - self.alpha_pos) * self.last_target_pos
+            )
+
+        self.last_target_pos = target_pos.copy()
+
+        # Convert target rotation to quaternion for MuJoCo IK
+        target_quat_np = npq.from_rotation_matrix(target_rot)
+        # MuJoCo uses (w, x, y, z) format
+        target_quat = npq.as_float_array(target_quat_np)  # [w, x, y, z]
+
+        # ── Solve IK ──────────────────────────────────────────
+        # Seed the physics with current robot state for warm start
+        self.physics.data.qpos[:NUM_JOINTS] = self.current_q
+        self.physics.step()
+
+        ik_result = qpos_from_site_pose(
+            self.physics,
+            self.site_name,
+            target_pos=target_pos,
+            target_quat=target_quat,
+            tol=1e-12,
+            max_steps=200,
+        )
+        self.physics.reset()
+
+        if ik_result.success:
+            q_goal = ik_result.qpos[:NUM_JOINTS]
+            self.last_q_goal = q_goal.copy()
+        else:
+            self.get_logger().warn(
+                "IK failed — holding last valid joint goal",
+                throttle_duration_sec=1.0,
+            )
+            if self.last_q_goal is not None:
+                q_goal = self.last_q_goal
+            else:
+                return  # no valid goal yet
+
+        # ── Publish joint states (mimic GelloPublisher) ───────
+        msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "fr3_link0"
-        
-        msg.pose.position.x = tx
-        msg.pose.position.y = ty
-        # Apply a safety bound to z to not crash into the floor
-        msg.pose.position.z = max(tz, 0.05) 
-        
-        msg.pose.orientation.x = qx
-        msg.pose.orientation.y = qy
-        msg.pose.orientation.z = qz
-        msg.pose.orientation.w = qw
-        
-        self.pose_pub.publish(msg)
+        msg.name = FR3_JOINT_NAMES
+        msg.position = q_goal.tolist()
+        self.joint_pub.publish(msg)
 
-        # 5. Gripper Command
-        # The bridge.py sends grasp as float 1.0 (closed) to 0.0 (open)
-        # The gripper manager expects width_percent. Let's map it.
-        # Assuming grasp 1.0 -> width 0.0 (closed), and grasp 0.0 -> width 1.0 (opened)
+        # ── Publish gripper command ───────────────────────────
         grip_msg = Float32()
-        grip_msg.data = 1.0 - grasp
+        grip_msg.data = 1.0 - grasp  # 1.0=open, 0.0=closed
         self.gripper_pub.publish(grip_msg)
 
+    # ── Cleanup ───────────────────────────────────────────────
     def destroy_node(self):
         self.running = False
         if self.thread:
-            self.thread.join()
+            self.thread.join(timeout=2.0)
         super().destroy_node()
+
 
 def main(args=None):
     rclpy.init(args=args)
@@ -136,5 +342,6 @@ def main(args=None):
         node.destroy_node()
         rclpy.try_shutdown()
 
-if __name__ == '__main__':
+
+if __name__ == "__main__":
     main()

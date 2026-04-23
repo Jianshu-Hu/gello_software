@@ -19,7 +19,7 @@ setup(
     zip_safe=True,
     maintainer='user',
     maintainer_email='user@example.com',
-    description='Meta Quest VR Teleoperation for Franka arms using Cartesian Impedance',
+    description='Meta Quest VR Teleoperation for Franka FR3 using IK + JointImpedanceController',
     license='Apache-2.0',
     tests_require=['pytest'],
     entry_points={

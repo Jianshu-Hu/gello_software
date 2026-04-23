@@ -1,32 +1,38 @@
-controller_manager:
-  ros__parameters:
-    update_rate: 1000  # Hz
-    
-    joint_state_broadcaster:
-      type: joint_state_broadcaster/JointStateBroadcaster
+/**:
+  controller_manager:
+    ros__parameters:
+      update_rate: 1000  # Hz
+      thread_priority: 98
+      cpu_affinity: [4,5]
+      lock_memory: true
 
-    franka_robot_state_broadcaster:
-      type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
+      joint_impedance_controller:
+        type: franka_fr3_arm_controllers/JointImpedanceController
 
-    cartesian_pose_example_controller:
-      type: franka_example_controllers/CartesianPoseExampleController
+      joint_state_broadcaster:
+        type: joint_state_broadcaster/JointStateBroadcaster
 
-cartesian_pose_example_controller:
-  ros__parameters:
-    arm_id: fr3
-    k_gains:
-      - 10.0  # X stiffness (molasses)
-      - 10.0  # Y stiffness
-      - 10.0  # Z stiffness
-      - 2.0   # Roll stiffness
-      - 2.0   # Pitch stiffness
-      - 2.0   # Yaw stiffness
-      - 1.0   # Nullspace stiffness
-    d_gains:
-      - 50.0  # X damping (highly damped)
-      - 50.0  # Y damping
-      - 50.0  # Z damping
-      - 10.0  # Roll damping
-      - 10.0  # Pitch damping
-      - 10.0  # Yaw damping
-      - 2.0   # Nullspace damping
+      franka_robot_state_broadcaster:
+        type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
+
+/**:
+  joint_impedance_controller:
+    ros__parameters:
+      arm_id: fr3
+      k_alpha: 0.99
+      k_gains:
+        - 240.0
+        - 240.0
+        - 240.0
+        - 240.0
+        - 100.0
+        - 60.0
+        - 20.0
+      d_gains:
+        - 20.0
+        - 20.0
+        - 20.0
+        - 10.0
+        - 10.0
+        - 10.0
+        - 5.0
