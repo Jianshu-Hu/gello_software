@@ -76,7 +76,7 @@ from launch.actions import DeclareLaunchArgument, IncludeLaunchDescription
 from launch.actions import OpaqueFunction, Shutdown
 from launch.launch_description_sources import PythonLaunchDescriptionSource
 from launch.conditions import UnlessCondition, IfCondition
-from launch.substitutions import LaunchConfiguration, PathJoinSubstitution
+from launch.substitutions import LaunchConfiguration, PathJoinSubstitution, PythonExpression
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
@@ -177,7 +177,18 @@ def generate_robot_nodes(context):
             namespace=namespace,
             arguments=["franka_robot_state_broadcaster"],
             parameters=[{"arm_id": LaunchConfiguration("arm_id").perform(context)}],
-            condition=UnlessCondition(LaunchConfiguration("use_fake_hardware")),
+            condition=UnlessCondition(
+                PythonExpression(
+                    [
+                        "'",
+                        LaunchConfiguration("use_fake_hardware"),
+                        "' == 'true' or '",
+                        LaunchConfiguration("deployment_mode"),
+                        "'",
+                        " == 'true'",
+                    ]
+                )
+            ),
             output="screen",
         ),
         IncludeLaunchDescription(

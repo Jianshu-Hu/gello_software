@@ -219,6 +219,7 @@ class LeRobotDataBridge(Node):
         self._deployment_controller_enabled = False
         self._deployment_controller_target_enabled: bool | None = None
         self._deployment_controller_transition_futures: list[tuple[str, Any, Any]] = []
+        self._deployment_arm_controller_available: dict[str, bool] = {"left": True, "right": True}
         self._deployment_joint_command_publishers: dict[str, Any] = {}
         self._deployment_gripper_command_publishers: dict[str, Any] = {}
         self._deployment_enable_clients: dict[str, Any] = {}
@@ -463,21 +464,22 @@ class LeRobotDataBridge(Node):
             return False
 
         clients: dict[str, Any] = {}
-        success = True
         for arm_name in self._required_arms():
             client = self._deployment_switch_clients.get(arm_name)
             if client is None:
+                self._deployment_arm_controller_available[arm_name] = False
                 continue
             if not client.wait_for_service(timeout_sec=0.2):
                 self._log_deployment_warning(
                     f"{arm_name}_controller_manager_missing",
                     f"Controller manager switch service for {arm_name} arm is not available yet.",
                 )
-                success = False
+                self._deployment_arm_controller_available[arm_name] = False
                 continue
+            self._deployment_arm_controller_available[arm_name] = True
             clients[arm_name] = client
 
-        if not success:
+        if not clients:
             return False
 
         futures: list[tuple[str, Any, Any]] = []
@@ -513,6 +515,7 @@ class LeRobotDataBridge(Node):
                     f"{arm_name}_transition_exception",
                     f"Deployment controller transition via {service_name} failed for {arm_name}: {exc}",
                 )
+                self._deployment_arm_controller_available[arm_name] = False
                 success = False
                 continue
 
@@ -521,6 +524,7 @@ class LeRobotDataBridge(Node):
                     f"{arm_name}_transition_rejected",
                     f"Controller manager rejected deployment controller transition for {arm_name}.",
                 )
+                self._deployment_arm_controller_available[arm_name] = False
                 success = False
                 continue
 
@@ -531,13 +535,27 @@ class LeRobotDataBridge(Node):
                     f"{arm_name}_deployment_toggle_rejected",
                     f"Deployment enable service rejected request for {arm_name}{suffix}.",
                 )
+                self._deployment_arm_controller_available[arm_name] = False
                 success = False
+                continue
+
+            self._deployment_arm_controller_available[arm_name] = True
 
         self._deployment_controller_transition_futures.clear()
         self._deployment_controller_target_enabled = None
 
         if not success:
-            return
+            available_arms = [
+                arm_name
+                for arm_name in self._required_arms()
+                if self._deployment_arm_controller_available.get(arm_name, False)
+            ]
+            if not available_arms:
+                return
+            self.get_logger().warning(
+                "Deployment controller transition succeeded only for: "
+                + ", ".join(sorted(available_arms))
+            )
 
         self._deployment_controller_enabled = target_enabled
         self.get_logger().info(
@@ -855,7 +873,14 @@ class LeRobotDataBridge(Node):
         return True
 
     def _all_arm_states_are_stable_for_hold(self) -> bool:
-        return all(self._arm_state_is_stable_for_hold(arm_name) for arm_name in self._required_arms())
+        active_arms = [
+            arm_name
+            for arm_name in self._required_arms()
+            if self._deployment_arm_controller_available.get(arm_name, True)
+        ]
+        if not active_arms:
+            return False
+        return all(self._arm_state_is_stable_for_hold(arm_name) for arm_name in active_arms)
 
     def _publish_hold_joint_commands(self) -> bool:
         if not self._all_arm_states_are_stable_for_hold():
@@ -863,6 +888,8 @@ class LeRobotDataBridge(Node):
 
         published_any = False
         for arm_name in self._required_arms():
+            if not self._deployment_arm_controller_available.get(arm_name, True):
+                continue
             sample = self.latest_robot_arm_samples[arm_name]
             if sample is None:
                 continue
@@ -897,6 +924,8 @@ class LeRobotDataBridge(Node):
             return
 
         for arm_name in self._required_arms():
+            if not self._deployment_arm_controller_available.get(arm_name, True):
+                continue
             target = self._current_or_command_joint_target(arm_name)
             if not target:
                 continue
@@ -909,6 +938,8 @@ class LeRobotDataBridge(Node):
 
         command = self._latest_deployment_command or {}
         for arm_name in self._required_arms():
+            if not self._deployment_arm_controller_available.get(arm_name, True):
+                continue
             command_key = f"{arm_name}_gripper_command"
             raw_value = command.get(command_key)
             if raw_value is None:
@@ -936,6 +967,8 @@ class LeRobotDataBridge(Node):
         for _ in range(5):
             published_this_cycle = False
             for arm_name in self._required_arms():
+                if not self._deployment_arm_controller_available.get(arm_name, True):
+                    continue
                 sample = self.latest_robot_arm_samples.get(arm_name)
                 publisher = self._deployment_joint_command_publishers.get(arm_name)
                 if sample is None or publisher is None:
