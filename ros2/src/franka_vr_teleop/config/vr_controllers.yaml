@@ -15,24 +15,24 @@
       franka_robot_state_broadcaster:
         type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
 
-/**:
-  joint_impedance_controller:
-    ros__parameters:
-      arm_id: fr3
-      k_alpha: 0.99
-      k_gains:
-        - 240.0
-        - 240.0
-        - 240.0
-        - 240.0
-        - 100.0
-        - 60.0
-        - 20.0
-      d_gains:
-        - 20.0
-        - 20.0
-        - 20.0
-        - 10.0
-        - 10.0
-        - 10.0
-        - 5.0
+joint_impedance_controller:
+  ros__parameters:
+    arm_id: fr3
+    k_alpha: 0.3
+    deployment_mode: true
+    k_gains:
+      - 800.0
+      - 800.0
+      - 800.0
+      - 800.0
+      - 400.0
+      - 300.0
+      - 100.0
+    d_gains:
+      - 40.0
+      - 40.0
+      - 40.0
+      - 40.0
+      - 15.0
+      - 15.0
+      - 8.0
