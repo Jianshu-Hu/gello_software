@@ -37,4 +37,4 @@ ros2/log/
 third_party/i2rt/
 
 # 3D Model Files
-*.stl
+*.stlros2/src/franka_vr_teleop/test/.venv/
