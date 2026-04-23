@@ -230,12 +230,17 @@ class VRTeleopNode(Node):
         vr_rot = transforms3d.quaternions.quat2mat([qw, qx, qy, qz])
 
         # ── First-press activation (relative control) ─────────
+        # ── First-press activation (relative control) ─────────
         if not self.control_active:
+            # IMPORTANT: Wait for a fresh joint state to avoid using stale robot pose
+            if self.current_q is None:
+                return
+
             self.control_active = True
             self.reference_vr_pos = vr_pos.copy()
             self.reference_vr_rot = vr_rot.copy()
 
-            # Get current EE pose from FK using current_q
+            # Run FK one last time on the LATEST joint angles to get reference
             self.physics.data.qpos[:NUM_JOINTS] = self.current_q
             self.physics.step()
             self.reference_robot_pos = np.array(
@@ -245,6 +250,7 @@ class VRTeleopNode(Node):
                 self.physics.named.data.site_xmat[self.site_name]
             ).reshape(3, 3).copy()
 
+            self.last_target_pos = self.reference_robot_pos.copy()
             self.get_logger().info("VR control activated — reference pose captured")
             return
 
@@ -314,17 +320,19 @@ class VRTeleopNode(Node):
                 return  # no valid goal yet
 
         # ── Publish joint states (mimic GelloPublisher) ───────
-        msg = JointState()
-        msg.header.stamp = self.get_clock().now().to_msg()
-        msg.header.frame_id = "fr3_link0"
-        msg.name = FR3_JOINT_NAMES
-        msg.position = q_goal.tolist()
-        self.joint_pub.publish(msg)
+        # IMPORTANT: Only publish if we are actively controlling to prevent startup jumps
+        if self.control_active:
+            msg = JointState()
+            msg.header.stamp = self.get_clock().now().to_msg()
+            msg.header.frame_id = "fr3_link0"
+            msg.name = FR3_JOINT_NAMES
+            msg.position = q_goal.tolist()
+            self.joint_pub.publish(msg)
 
-        # ── Publish gripper command ───────────────────────────
-        grip_msg = Float32()
-        grip_msg.data = 1.0 - grasp  # 1.0=open, 0.0=closed
-        self.gripper_pub.publish(grip_msg)
+            # ── Publish gripper command ───────────────────────────
+            grip_msg = Float32()
+            grip_msg.data = 1.0 - grasp  # 1.0=open, 0.0=closed
+            self.gripper_pub.publish(grip_msg)
 
     # ── Cleanup ───────────────────────────────────────────────
     def destroy_node(self):
