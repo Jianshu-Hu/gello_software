@@ -57,7 +57,7 @@ VR_TO_ROBOT = np.eye(4)
 VR_ORIGIN_OFFSET = np.array([0.4, 0.0, 0.4])  # meters — roughly center of FR3 workspace
 
 # Position scaling: VR hand movement range → robot workspace range
-VR_POSITION_SCALE = 1.0
+VR_POSITION_SCALE = 0.8  # 10cm hand move = 8cm robot move
 
 
 class VRTeleopNode(Node):
@@ -286,8 +286,8 @@ class VRTeleopNode(Node):
             self.site_name,
             target_pos=target_pos,
             target_quat=target_quat,
-            tol=1e-12,
-            max_steps=200,
+            tol=1e-4, # Relaxed from 1e-12 for better reachability
+            max_steps=400, # Increased for more robust solving
         )
         self.physics.reset()
 
