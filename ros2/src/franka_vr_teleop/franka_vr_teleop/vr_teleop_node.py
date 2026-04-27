@@ -99,9 +99,9 @@ class VRTeleopNode(Node):
         # ── Safety / smoothing state ───────────────────────────────
         self.last_target_pos = None
         self.last_target_quat = None
-        self.alpha_pos = 0.8       # INCREASED responsiveness
-        self.alpha_rot = 0.8       # INCREASED responsiveness
-        self.max_delta_pos = 0.05  # Increased max speed
+        self.alpha_pos = 0.4       # Smoother, safer position tracking
+        self.alpha_rot = 0.2       # VERY smooth rotation to prevent twist reflexes
+        self.max_delta_pos = 0.02  # Max 2cm per frame (1.2m/s) to prevent jerks
         self.last_q_goal = None    # last successfully solved joint angles
         self.startup_q = None      # The 'Home Base' captured at launch
         self.last_udp_time = self.get_clock().now()
@@ -307,6 +307,19 @@ class VRTeleopNode(Node):
         # Convert target rotation to quaternion for MuJoCo IK
         # transforms3d.mat2quat returns (w,x,y,z) — same as MuJoCo
         target_quat = transforms3d.quaternions.mat2quat(target_rot)
+
+        # ── Rotational Smoothing (Nlerp) ──────────────────────
+        if self.last_target_quat is not None:
+            # Ensure shortest path interpolation
+            dot = np.dot(target_quat, self.last_target_quat)
+            if dot < 0.0:
+                target_quat = -target_quat
+            
+            # Blend
+            blended_quat = self.alpha_rot * target_quat + (1.0 - self.alpha_rot) * self.last_target_quat
+            target_quat = blended_quat / np.linalg.norm(blended_quat)
+
+        self.last_target_quat = target_quat.copy()
 
         # ── Solve IK ──────────────────────────────────────────
         # Seed the physics with current robot state for warm start
