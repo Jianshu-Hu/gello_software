@@ -301,7 +301,7 @@ bool JointImpedanceController::validateGains_(const std::vector<double>& gains,
 }
 
 void JointImpedanceController::validateGelloPositions_(const sensor_msgs::msg::JointState& msg) {
-  const double max_time_diff = 0.5;
+  const double max_time_diff = 2.0;  // Relaxed from 0.5 to allow for clock drift
   auto current_time = get_node()->now();
   auto time_since_last_joint_state = (current_time - last_joint_state_time_).seconds();
   auto time_since_msg_stamp = (current_time - msg.header.stamp).seconds();

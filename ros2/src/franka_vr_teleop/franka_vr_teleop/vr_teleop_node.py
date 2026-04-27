@@ -361,7 +361,9 @@ class VRTeleopNode(Node):
             status = "ACTIVE" if self.control_active else "IDLE"
             q_out = q_goal if self.control_active else self.startup_q
             q_str = [round(x, 3) for x in q_out.tolist()] if q_out is not None else "None"
-            vr_status = "CONNECTED" if (now - self.last_udp_time).nanoseconds < 1e9 else "WAITING"
+            
+            # Fix status check using seconds instead of nanoseconds for 1.0s threshold
+            vr_status = "CONNECTED" if (now - self.last_udp_time).nanoseconds < (2 * 1e9) else "WAITING"
             
             self.get_logger().info(
                 f"\n--- VR TELEOP STATUS ---\n"

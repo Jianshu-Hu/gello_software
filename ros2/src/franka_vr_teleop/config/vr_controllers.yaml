@@ -19,7 +19,7 @@ joint_impedance_controller:
   ros__parameters:
     arm_id: fr3
     k_alpha: 0.3
-    deployment_mode: true
+    deployment_mode: false
     # Lowered slightly from 800 to prevent safety trips at startup
     k_gains:
       - 600.0
