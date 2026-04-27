@@ -99,9 +99,9 @@ class VRTeleopNode(Node):
         # ── Safety / smoothing state ───────────────────────────────
         self.last_target_pos = None
         self.last_target_quat = None
-        self.alpha_pos = 0.3       # EMA smoothing factor for position
-        self.alpha_rot = 0.5       # EMA smoothing factor for rotation
-        self.max_delta_pos = 0.02  # max 2 cm per IK cycle
+        self.alpha_pos = 0.8       # INCREASED responsiveness
+        self.alpha_rot = 0.8       # INCREASED responsiveness
+        self.max_delta_pos = 0.05  # Increased max speed
         self.last_q_goal = None    # last successfully solved joint angles
         self.startup_q = None      # The 'Home Base' captured at launch
         self.last_udp_time = self.get_clock().now()
@@ -251,7 +251,7 @@ class VRTeleopNode(Node):
 
             # Run FK one last time on the LATEST joint angles to get reference
             self.physics.data.qpos[:NUM_JOINTS] = self.current_q
-            self.physics.step()
+            mj.mj_forward(self.model, self.physics.data)
             self.reference_robot_pos = np.array(
                 self.physics.named.data.site_xpos[self.site_name]
             ).copy()
@@ -275,6 +275,13 @@ class VRTeleopNode(Node):
         # Compute absolute target in robot frame
         target_pos = self.reference_robot_pos + delta_pos_robot
         target_rot = delta_rot_robot @ self.reference_robot_rot
+
+        # --- Movement Diagnostic ---
+        dist_vr = np.linalg.norm(vr_pos - self.reference_vr_pos)
+        self.get_logger().info(
+            f"CLUTCH HELD - VR Delta: {dist_vr:.3f}m | Target: {target_pos[0]:.2f}, {target_pos[1]:.2f}, {target_pos[2]:.2f}",
+            throttle_duration_sec=0.5
+        )
 
         # ── Safety: position clamping ─────────────────────────
         if self.last_target_pos is not None:
