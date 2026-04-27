@@ -112,6 +112,10 @@ class VRTeleopNode(Node):
         self.reference_vr_rot = None
         self.reference_robot_pos = None
         self.reference_robot_rot = None
+        self.current_grasp = 0.0
+
+        # ── 60Hz Publish Timer ─────────────────────────────────────
+        self.pub_timer = self.create_timer(1.0 / 60.0, self._publish_timer_callback)
 
         # ── UDP receiver ───────────────────────────────────────────
         self.udp_port = 9876
@@ -207,6 +211,8 @@ class VRTeleopNode(Node):
                             )
                             self.control_active = False
                             self.reference_vr_pos = None
+                        
+                    self.current_grasp = r_grasp
                 else:
                     self.get_logger().warn(
                         f"Malformed UDP packet ({len(data)} bytes)",
@@ -330,28 +336,23 @@ class VRTeleopNode(Node):
                 "IK failed — holding last valid joint goal",
                 throttle_duration_sec=1.0,
             )
-            if self.last_q_goal is not None:
-                q_goal = self.last_q_goal
-            else:
-                q_goal = self.current_q # Fallback to actual
-                if q_goal is None: return
 
-        # ── Publish joint states ──────────────────────────────
-        # Follow pseudo-code: If inactive, stay at startup_q. If active, follow IK.
+    # ── Independent 60Hz Publishing Loop ──────────────────────
+    def _publish_timer_callback(self):
+        """Continuously publish commands to keep the C++ controller active."""
         msg = JointState()
         msg.header.stamp = self.get_clock().now().to_msg()
         msg.header.frame_id = "fr3_link0"
         msg.name = FR3_JOINT_NAMES
 
-        if self.control_active:
-            msg.position = q_goal.tolist()
+        # Determine target joints
+        if self.control_active and self.last_q_goal is not None:
+            msg.position = self.last_q_goal.tolist()
         else:
-            # Stay at (or go to) the initial startup pose
             if self.startup_q is not None:
                 msg.position = self.startup_q.tolist()
             else:
-                # Still waiting for robot to report its state
-                return
+                return # Can't publish if we don't have a starting pose yet
 
         # ── Debug Logging (Throttle to 1Hz) ──────────────────
         now = self.get_clock().now()
@@ -359,10 +360,9 @@ class VRTeleopNode(Node):
         
         if (now - self._last_debug_time).nanoseconds > 1e9: # Every 1s
             status = "ACTIVE" if self.control_active else "IDLE"
-            q_out = q_goal if self.control_active else self.startup_q
+            q_out = self.last_q_goal if self.control_active else self.startup_q
             q_str = [round(x, 3) for x in q_out.tolist()] if q_out is not None else "None"
             
-            # Fix status check using seconds instead of nanoseconds for 1.0s threshold
             vr_status = "CONNECTED" if (now - self.last_udp_time).nanoseconds < (2 * 1e9) else "WAITING"
             
             self.get_logger().info(
@@ -379,10 +379,11 @@ class VRTeleopNode(Node):
         # ── Publish gripper command ───────────────────────────
         grip_msg = Float32()
         if self.control_active:
-            grip_msg.data = 1.0 - grasp  # 1.0=open, 0.0=closed
+            grip_msg.data = 1.0 - self.current_grasp  # 1.0=open, 0.0=closed
         else:
             grip_msg.data = 1.0 # Keep open in idle period
         self.gripper_pub.publish(grip_msg)
+
 
     # ── Cleanup ───────────────────────────────────────────────
     def destroy_node(self):
