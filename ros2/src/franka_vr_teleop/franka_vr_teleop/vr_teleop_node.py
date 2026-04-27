@@ -188,14 +188,8 @@ class VRTeleopNode(Node):
                     r_grasp = vals[7]
                     r_tracked = vals[8] > 0.5
 
-                    # Clutching logic: Only move if trigger is held
-                    if r_grasp < 0.5:
-                        if self.control_active:
-                            self.get_logger().info("Trigger released — Holding position (Clutching)")
-                            self.control_active = False
-                            self.reference_vr_pos = None
-                            self.last_target_pos = None
-                        continue
+                    # Always update grasp
+                    self.current_grasp = r_grasp
 
                     if r_tracked:
                         self._process_vr_pose(
@@ -212,7 +206,6 @@ class VRTeleopNode(Node):
                             self.control_active = False
                             self.reference_vr_pos = None
                         
-                    self.current_grasp = r_grasp
                 else:
                     self.get_logger().warn(
                         f"Malformed UDP packet ({len(data)} bytes)",
