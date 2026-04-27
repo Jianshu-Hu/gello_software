@@ -244,13 +244,9 @@ class VRTeleopNode(Node):
             if self.current_q is None:
                 return
 
-            self.control_active = True
-            self.reference_vr_pos = vr_pos.copy()
-            self.reference_vr_rot = vr_rot.copy()
-
             # Run FK one last time on the LATEST joint angles to get reference
             self.physics.data.qpos[:NUM_JOINTS] = self.current_q
-            mj.mj_forward(self.model, self.physics.data)
+            self.physics.forward()
             self.reference_robot_pos = np.array(
                 self.physics.named.data.site_xpos[self.site_name]
             ).copy()
@@ -259,6 +255,12 @@ class VRTeleopNode(Node):
             ).reshape(3, 3).copy()
 
             self.last_target_pos = self.reference_robot_pos.copy()
+            
+            # Set to True ONLY after everything successfully initializes
+            self.reference_vr_pos = vr_pos.copy()
+            self.reference_vr_rot = vr_rot.copy()
+            self.control_active = True
+            
             self.get_logger().info("VR control activated — reference pose captured")
             return
 
