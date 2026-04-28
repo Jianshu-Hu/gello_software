@@ -34,6 +34,7 @@ find_package(hardware_interface REQUIRED)
 find_package(franka_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
 find_package(franka_semantic_components REQUIRED)
+find_package(geometry_msgs REQUIRED)
 find_package(moveit_core REQUIRED)
 find_package(moveit_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
@@ -41,12 +42,14 @@ find_package(std_srvs REQUIRED)
 add_library(
         ${PROJECT_NAME}
         SHARED
+        cartesian_end_effector_controller/src/cartesian_end_effector_controller.cpp
         src/joint_impedance_controller.cpp
         src/motion_generator.cpp)
 target_include_directories(
         ${PROJECT_NAME}
         PUBLIC
         include
+        cartesian_end_effector_controller/include
         ${EIGEN3_INCLUDE_DIRS}
 )
 ament_target_dependencies(
@@ -57,6 +60,7 @@ ament_target_dependencies(
         rclcpp
         rclcpp_lifecycle
         franka_semantic_components
+        geometry_msgs
         moveit_core
         moveit_msgs
         std_srvs
@@ -79,8 +83,21 @@ install(
 )
 
 install(
-  DIRECTORY config launch
+        DIRECTORY cartesian_end_effector_controller/include/
+        DESTINATION include
+)
+
+install(
+  DIRECTORY config launch cartesian_end_effector_controller
   DESTINATION share/${PROJECT_NAME}
+  PATTERN "include" EXCLUDE
+  PATTERN "src" EXCLUDE
+)
+
+install(
+  PROGRAMS cartesian_end_effector_controller/scripts/vr_cartesian_teleop_node.py
+  DESTINATION lib/${PROJECT_NAME}
+  RENAME vr_cartesian_teleop_node
 )
 
 ament_export_include_directories(
@@ -95,6 +112,8 @@ ament_export_dependencies(
         rclcpp
         rclcpp_lifecycle
         hardware_interface
+        franka_semantic_components
+        geometry_msgs
         moveit_core
         std_srvs
 )

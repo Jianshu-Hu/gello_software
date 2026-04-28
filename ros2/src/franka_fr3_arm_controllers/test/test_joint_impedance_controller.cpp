@@ -104,5 +104,10 @@ void JointImpedanceControllerTest::setRobotPosition(const std::vector<double>& p
 
 void JointImpedanceControllerTest::setValidControllerParameters() {
   controller_->get_node()->set_parameters(
-      {{"arm_id", kArmId_}, {"k_gains", kKGains_}, {"d_gains", kDGains_}, {"k_alpha", kKAlpha_}});
+      {{"arm_id", kArmId_},
+       {"k_gains", kKGains_},
+       {"d_gains", kDGains_},
+       {"k_alpha", kKAlpha_},
+       {"max_command_velocity", kMaxCommandVelocity_},
+       {"command_filter_alpha", kCommandFilterAlpha_}});
 }

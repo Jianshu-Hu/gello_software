@@ -62,7 +62,9 @@ class JointImpedanceControllerTest : public ::testing::Test {
   const std::string kArmId_ = "fr3";
   const std::vector<double> kKGains_ = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
   const std::vector<double> kDGains_ = {0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1};
+  const std::vector<double> kMaxCommandVelocity_ = {10.0, 10.0, 10.0, 10.0, 10.0, 10.0, 10.0};
   static constexpr double kKAlpha_ = 0.5;
+  static constexpr double kCommandFilterAlpha_ = 1.0;
 
   /**
    * @brief Current state of the "robot"

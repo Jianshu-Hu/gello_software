@@ -19,6 +19,15 @@
   joint_impedance_controller:
     ros__parameters:
       k_alpha: 0.99
+      command_filter_alpha: 0.01
+      max_command_velocity:
+        - 0.45
+        - 0.45
+        - 0.45
+        - 0.45
+        - 0.90
+        - 0.75
+        - 0.90
       k_gains:
         - 240.0
         - 240.0

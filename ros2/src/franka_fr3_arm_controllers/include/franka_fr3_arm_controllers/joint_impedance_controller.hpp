@@ -55,10 +55,14 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   Vector7d k_gains_;
   Vector7d d_gains_;
   Vector7d hold_position_;
+  Vector7d q_goal_filtered_;
+  Vector7d max_command_velocity_;
   double k_alpha_;
+  double command_filter_alpha_;
   bool move_to_start_position_finished_{false};
   bool motion_generator_initialized_{false};
   bool hold_position_initialized_{false};
+  bool q_goal_filter_initialized_{false};
   bool deployment_mode_{false};
   bool deployment_enabled_{true};
   rclcpp::Time start_time_;
@@ -76,6 +80,8 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
 
   Vector7d calculateTauDGains_(const Vector7d& q_goal);
   bool validateGains_(const std::vector<double>& gains, const std::string& gains_name);
+  bool validateFilterParameters_(const std::vector<double>& max_command_velocity);
+  Vector7d filterJointGoal_(const Vector7d& q_goal, const rclcpp::Duration& period);
   bool initializeMotionGenerator_();
   void publishCommandedJointState_(const Vector7d& q_goal);
   void updateJointStates_();

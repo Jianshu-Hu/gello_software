@@ -1,0 +1,34 @@
+/**:
+  controller_manager:
+    ros__parameters:
+      update_rate: 1000
+      thread_priority: 98
+      cpu_affinity: [4,5]
+      lock_memory: true
+
+      cartesian_end_effector_controller:
+        type: franka_fr3_arm_controllers/CartesianEndEffectorController
+
+      joint_state_broadcaster:
+        type: joint_state_broadcaster/JointStateBroadcaster
+
+      franka_robot_state_broadcaster:
+        type: franka_robot_state_broadcaster/FrankaRobotStateBroadcaster
+
+cartesian_end_effector_controller:
+  ros__parameters:
+    arm_id: fr3
+    target_pose_topic: /cartesian_end_effector_controller/target_pose
+    vr_position_scale: 1.0
+    command_timeout_sec: 0.25
+    filter_time_constant_sec: 0.12
+    max_linear_velocity: 0.10
+    max_angular_velocity: 0.60
+    workspace_radius: 0.30
+    min_z: 0.05
+
+vr_cartesian_teleop_node:
+  ros__parameters:
+    udp_port: 9876
+    target_pose_topic: /cartesian_end_effector_controller/target_pose
+    hand: right

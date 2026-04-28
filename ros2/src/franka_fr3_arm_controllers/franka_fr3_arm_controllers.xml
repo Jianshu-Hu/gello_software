@@ -6,4 +6,11 @@
             The JointImpedanceController single arm controller for gello
         </description>
     </class>
+    <class name="franka_fr3_arm_controllers/CartesianEndEffectorController"
+        type="franka_fr3_arm_controllers::CartesianEndEffectorController"
+        base_class_type="controller_interface::ControllerInterface">
+        <description>
+            Cartesian end-effector pose controller for direct VR teleoperation without IK.
+        </description>
+    </class>
 </library>

@@ -20,20 +20,30 @@ joint_impedance_controller:
     arm_id: fr3
     k_alpha: 0.3
     deployment_mode: false
-    # Lowered slightly from 800 to prevent safety trips at startup
+    command_filter_alpha: 0.01
+    max_command_velocity:
+      - 0.45
+      - 0.45
+      - 0.45
+      - 0.45
+      - 0.90
+      - 0.75
+      - 0.90
+    # Conservative teleop gains. High stiffness amplifies stepwise VR/IK targets
+    # into visible vibration in the 1 kHz torque loop.
     k_gains:
-      - 600.0
-      - 600.0
-      - 600.0
-      - 600.0
-      - 250.0
-      - 150.0
-      - 50.0
+      - 240.0
+      - 240.0
+      - 240.0
+      - 240.0
+      - 100.0
+      - 60.0
+      - 20.0
     d_gains:
-      - 30.0
-      - 30.0
-      - 30.0
-      - 30.0
+      - 20.0
+      - 20.0
+      - 20.0
+      - 20.0
       - 10.0
       - 10.0
       - 5.0

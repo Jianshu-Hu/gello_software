@@ -50,7 +50,7 @@ JointImpedanceController::state_interface_configuration() const {
 
 controller_interface::return_type JointImpedanceController::update(
     const rclcpp::Time& /*time*/,
-    const rclcpp::Duration& /*period*/) {
+    const rclcpp::Duration& period) {
   updateJointStates_();
   Vector7d q_goal;
   Vector7d tau_d_calculated;
@@ -59,8 +59,10 @@ controller_interface::return_type JointImpedanceController::update(
     if (!hold_position_initialized_) {
       hold_position_ = q_;
       hold_position_initialized_ = true;
+      q_goal_filter_initialized_ = false;
     }
     q_goal = hold_position_;
+    q_goal = filterJointGoal_(q_goal, period);
     tau_d_calculated = calculateTauDGains_(q_goal);
     for (int i = 0; i < num_joints; ++i) {
       command_interfaces_[i].set_value(tau_d_calculated(i));
@@ -80,8 +82,10 @@ controller_interface::return_type JointImpedanceController::update(
       if (!hold_position_initialized_) {
         hold_position_ = q_;
         hold_position_initialized_ = true;
+        q_goal_filter_initialized_ = false;
       }
       q_goal = hold_position_;
+      q_goal = filterJointGoal_(q_goal, period);
       tau_d_calculated = calculateTauDGains_(q_goal);
       for (int i = 0; i < num_joints; ++i) {
         command_interfaces_[i].set_value(tau_d_calculated(i));
@@ -114,6 +118,7 @@ controller_interface::return_type JointImpedanceController::update(
     }
   }
 
+  q_goal = filterJointGoal_(q_goal, period);
   tau_d_calculated = calculateTauDGains_(q_goal);
 
   for (int i = 0; i < num_joints; ++i) {
@@ -154,6 +159,8 @@ CallbackReturn JointImpedanceController::on_init() {
     auto_declare<std::string>("arm_id", "");
     auto_declare<std::vector<double>>("k_gains", {});
     auto_declare<std::vector<double>>("d_gains", {});
+    auto_declare<std::vector<double>>("max_command_velocity", {});
+    auto_declare<double>("command_filter_alpha", 0.01);
     auto_declare<bool>("deployment_mode", false);
   } catch (const std::exception& e) {
     fprintf(stderr, "Exception thrown during init stage with message: %s \n", e.what());
@@ -176,14 +183,19 @@ CallbackReturn JointImpedanceController::on_configure(
   auto k_gains = get_node()->get_parameter("k_gains").as_double_array();
   auto d_gains = get_node()->get_parameter("d_gains").as_double_array();
   auto k_alpha = get_node()->get_parameter("k_alpha").as_double();
+  auto max_command_velocity =
+      get_node()->get_parameter("max_command_velocity").as_double_array();
+  auto command_filter_alpha = get_node()->get_parameter("command_filter_alpha").as_double();
 
-  if (!validateGains_(k_gains, "k_gains") || !validateGains_(d_gains, "d_gains")) {
+  if (!validateGains_(k_gains, "k_gains") || !validateGains_(d_gains, "d_gains") ||
+      !validateFilterParameters_(max_command_velocity)) {
     return CallbackReturn::FAILURE;
   }
 
   for (int i = 0; i < num_joints; ++i) {
     d_gains_(i) = d_gains.at(i);
     k_gains_(i) = k_gains.at(i);
+    max_command_velocity_(i) = max_command_velocity.at(i);
   }
 
   if (k_alpha < 0.0 || k_alpha > 1.0) {
@@ -191,11 +203,19 @@ CallbackReturn JointImpedanceController::on_configure(
     return CallbackReturn::FAILURE;
   }
 
+  if (command_filter_alpha <= 0.0 || command_filter_alpha > 1.0) {
+    RCLCPP_FATAL(get_node()->get_logger(), "command_filter_alpha should be in the range (0, 1]");
+    return CallbackReturn::FAILURE;
+  }
+
   k_alpha_ = k_alpha;
+  command_filter_alpha_ = command_filter_alpha;
   deployment_mode_ = get_node()->get_parameter("deployment_mode").as_bool();
   deployment_enabled_ = !deployment_mode_;
 
   dq_filtered_.setZero();
+  q_goal_filtered_.setZero();
+  q_goal_filter_initialized_ = false;
   for (int i = 0; i < num_joints; ++i) {
     joint_names_[i] = arm_id_ + "_joint" + std::to_string(i + 1);
   }
@@ -240,6 +260,8 @@ CallbackReturn JointImpedanceController::on_activate(
     deployment_enabled_ = true;
   }
   dq_filtered_.setZero();
+  q_goal_filtered_ = q_;
+  q_goal_filter_initialized_ = true;
   start_time_ = activation_time_;
 
   return CallbackReturn::SUCCESS;
@@ -249,6 +271,7 @@ CallbackReturn JointImpedanceController::on_deactivate(
     const rclcpp_lifecycle::State& /*previous_state*/) {
   deployment_enabled_ = !deployment_mode_;
   hold_position_initialized_ = false;
+  q_goal_filter_initialized_ = false;
   motion_generator_initialized_ = false;
   move_to_start_position_finished_ = false;
   motion_generator_.reset();
@@ -300,6 +323,51 @@ bool JointImpedanceController::validateGains_(const std::vector<double>& gains,
   return true;
 }
 
+bool JointImpedanceController::validateFilterParameters_(
+    const std::vector<double>& max_command_velocity) {
+  if (max_command_velocity.empty()) {
+    RCLCPP_FATAL(get_node()->get_logger(), "max_command_velocity parameter not set");
+    return false;
+  }
+
+  if (max_command_velocity.size() != static_cast<uint>(num_joints)) {
+    RCLCPP_FATAL(get_node()->get_logger(),
+                 "max_command_velocity should be of size %d but is of size %ld",
+                 num_joints, max_command_velocity.size());
+    return false;
+  }
+
+  for (const auto& velocity : max_command_velocity) {
+    if (velocity <= 0.0) {
+      RCLCPP_FATAL(get_node()->get_logger(), "max_command_velocity values must be positive");
+      return false;
+    }
+  }
+
+  return true;
+}
+
+JointImpedanceController::Vector7d JointImpedanceController::filterJointGoal_(
+    const Vector7d& q_goal,
+    const rclcpp::Duration& period) {
+  if (!q_goal_filter_initialized_) {
+    q_goal_filtered_ = q_;
+    q_goal_filter_initialized_ = true;
+  }
+
+  const double dt = std::max(period.seconds(), 0.001);
+  Vector7d q_filtered = command_filter_alpha_ * q_goal + (1.0 - command_filter_alpha_) * q_goal_filtered_;
+
+  for (int i = 0; i < num_joints; ++i) {
+    const double max_step = max_command_velocity_(i) * dt;
+    const double step = std::clamp(q_filtered(i) - q_goal_filtered_(i), -max_step, max_step);
+    q_filtered(i) = q_goal_filtered_(i) + step;
+  }
+
+  q_goal_filtered_ = q_filtered;
+  return q_goal_filtered_;
+}
+
 void JointImpedanceController::validateGelloPositions_(const sensor_msgs::msg::JointState& msg) {
   const double max_time_diff = 2.0;  // Relaxed from 0.5 to allow for clock drift
   auto current_time = get_node()->now();
@@ -318,6 +386,7 @@ void JointImpedanceController::validateGelloPositions_(const sensor_msgs::msg::J
 void JointImpedanceController::enterHoldMode_() {
   hold_position_ = q_;
   hold_position_initialized_ = true;
+  q_goal_filter_initialized_ = false;
   move_to_start_position_finished_ = false;
   motion_generator_initialized_ = false;
   motion_generator_.reset();
@@ -331,6 +400,8 @@ void JointImpedanceController::resetCommandTracking_(const rclcpp::Time& referen
   for (int i = 0; i < 7; ++i) {
     gello_position_values_[i] = q_(i);
   }
+  q_goal_filtered_ = q_;
+  q_goal_filter_initialized_ = true;
 
   last_joint_state_time_ = reference_time;
   command_accept_time_ = reference_time;
