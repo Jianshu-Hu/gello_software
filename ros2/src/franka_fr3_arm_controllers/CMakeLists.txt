@@ -95,6 +95,16 @@ install(
 )
 
 install(
+  FILES cartesian_end_effector_controller/config/cartesian_controllers.yaml
+  DESTINATION share/${PROJECT_NAME}/config
+)
+
+install(
+  FILES cartesian_end_effector_controller/launch/franka_vr_cartesian_end_effector.launch.py
+  DESTINATION share/${PROJECT_NAME}/launch
+)
+
+install(
   PROGRAMS cartesian_end_effector_controller/scripts/vr_cartesian_teleop_node.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME vr_cartesian_teleop_node

@@ -23,9 +23,7 @@ def generate_launch_description():
     fake_sensor_commands = LaunchConfiguration(fake_sensor_commands_parameter_name)
 
     pkg_share = get_package_share_directory("franka_fr3_arm_controllers")
-    controllers_file = os.path.join(
-        pkg_share, "cartesian_end_effector_controller", "config", "cartesian_controllers.yaml"
-    )
+    controllers_file = os.path.join(pkg_share, "config", "cartesian_controllers.yaml")
 
     franka_xacro_file = os.path.join(
         get_package_share_directory("franka_description"),
