@@ -44,6 +44,12 @@ FR3_JOINT_NAMES = [
 ]
 NUM_JOINTS = 7
 
+# Conservative teleop limits. FR3 hardware limits are higher; this cap is
+# intentionally lower because VR input and IK output are not realtime-smooth.
+FR3_TELEOP_MAX_JOINT_VELOCITY = np.array(
+    [0.65, 0.65, 0.65, 0.65, 1.30, 1.00, 1.30]
+)  # rad/s
+
 # ---------- VR-to-Robot coordinate frame transform ----------
 # Bridge outputs right-handed Z-up: x=front, y=left, z=up
 # Franka base frame is also right-handed Z-up with x-forward
@@ -102,7 +108,11 @@ class VRTeleopNode(Node):
         self.alpha_pos = 0.4       # Smoother, safer position tracking
         self.alpha_rot = 0.2       # VERY smooth rotation to prevent twist reflexes
         self.max_delta_pos = 0.02  # Max 2cm per frame (1.2m/s) to prevent jerks
+        self.joint_smoothing_alpha = 0.25
+        self.max_ik_joint_jump = np.deg2rad(35.0)
+        self.max_joint_velocity = FR3_TELEOP_MAX_JOINT_VELOCITY
         self.last_q_goal = None    # last successfully solved joint angles
+        self.last_ik_time = None
         self.startup_q = None      # The 'Home Base' captured at launch
         self.last_udp_time = self.get_clock().now()
 
@@ -180,6 +190,7 @@ class VRTeleopNode(Node):
             try:
                 data, _ = self.sock.recvfrom(4096)
                 if len(data) == _PACK_SIZE:
+                    self.last_udp_time = self.get_clock().now()
                     vals = struct.unpack(_PACK_FMT, data)
 
                     # Right hand data
@@ -205,6 +216,9 @@ class VRTeleopNode(Node):
                             )
                             self.control_active = False
                             self.reference_vr_pos = None
+                            self.last_target_pos = None
+                            self.last_target_quat = None
+                            self.last_ik_time = None
                         
                 else:
                     self.get_logger().warn(
@@ -255,6 +269,9 @@ class VRTeleopNode(Node):
             ).reshape(3, 3).copy()
 
             self.last_target_pos = self.reference_robot_pos.copy()
+            self.last_target_quat = None
+            self.last_q_goal = self.current_q.copy()
+            self.last_ik_time = self.get_clock().now()
             
             # Set to True ONLY after everything successfully initializes
             self.reference_vr_pos = vr_pos.copy()
@@ -322,9 +339,12 @@ class VRTeleopNode(Node):
         self.last_target_quat = target_quat.copy()
 
         # ── Solve IK ──────────────────────────────────────────
-        # Seed the physics with current robot state for warm start
-        self.physics.data.qpos[:NUM_JOINTS] = self.current_q
-        self.physics.step()
+        # Seed with the last commanded goal to keep the redundant IK solution
+        # continuous. Using measured q directly can feed tracking lag back into
+        # the solver and produce small branch-to-branch target jumps.
+        ik_seed_q = self.last_q_goal if self.last_q_goal is not None else self.current_q
+        self.physics.data.qpos[:NUM_JOINTS] = ik_seed_q
+        self.physics.forward()
 
         ik_result = qpos_from_site_pose(
             self.physics,
@@ -337,13 +357,47 @@ class VRTeleopNode(Node):
         self.physics.reset()
 
         if ik_result.success:
-            q_goal = ik_result.qpos[:NUM_JOINTS]
+            q_goal = self._smooth_joint_goal(ik_result.qpos[:NUM_JOINTS])
             self.last_q_goal = q_goal.copy()
         else:
             self.get_logger().warn(
                 "IK failed — holding last valid joint goal",
                 throttle_duration_sec=1.0,
             )
+
+    def _smooth_joint_goal(self, q_raw):
+        """Limit IK target discontinuities before the torque controller sees them."""
+        q_raw = np.asarray(q_raw, dtype=float)
+
+        now = self.get_clock().now()
+        if self.last_q_goal is None:
+            self.last_ik_time = now
+            return q_raw.copy()
+
+        if self.last_ik_time is None:
+            dt = 1.0 / 60.0
+        else:
+            dt = (now - self.last_ik_time).nanoseconds * 1e-9
+            if dt <= 0.0:
+                dt = 1.0 / 60.0
+            dt = min(dt, 0.1)
+        self.last_ik_time = now
+
+        raw_step = q_raw - self.last_q_goal
+        if np.any(np.abs(raw_step) > self.max_ik_joint_jump):
+            self.get_logger().warn(
+                "IK joint jump detected — holding last valid joint goal",
+                throttle_duration_sec=1.0,
+            )
+            return self.last_q_goal.copy()
+
+        q_filtered = (
+            self.joint_smoothing_alpha * q_raw
+            + (1.0 - self.joint_smoothing_alpha) * self.last_q_goal
+        )
+        max_step = self.max_joint_velocity * dt
+        limited_step = np.clip(q_filtered - self.last_q_goal, -max_step, max_step)
+        return self.last_q_goal + limited_step
 
     # ── Independent 60Hz Publishing Loop ──────────────────────
     def _publish_timer_callback(self):
