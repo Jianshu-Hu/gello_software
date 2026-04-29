@@ -53,6 +53,15 @@ double limitedAlpha(double dt, double time_constant) {
   return std::clamp(dt / (time_constant + dt), 0.0, 1.0);
 }
 
+bool hasFiniteEntries(const Eigen::Vector3d& vector) {
+  return vector.array().isFinite().all();
+}
+
+bool hasFiniteEntries(const Eigen::Quaterniond& quaternion) {
+  return std::isfinite(quaternion.w()) && std::isfinite(quaternion.x()) &&
+         std::isfinite(quaternion.y()) && std::isfinite(quaternion.z());
+}
+
 }  // namespace
 
 namespace franka_fr3_arm_controllers {
@@ -78,7 +87,10 @@ controller_interface::return_type CartesianEndEffectorController::update(
     const rclcpp::Duration& period) {
   Eigen::Vector3d vr_position;
   Eigen::Quaterniond vr_orientation;
-  const bool has_target = readLatestVrPose_(vr_position, vr_orientation);
+  double target_stamp_sec = 0.0;
+  uint64_t target_sequence = 0;
+  const bool has_target =
+      readLatestVrPose_(vr_position, vr_orientation, target_stamp_sec, target_sequence);
 
   const auto current_pose = franka_cartesian_pose_->getCurrentPoseMatrix();
   const Eigen::Vector3d current_position = translationFromColumnMajorArray(current_pose);
@@ -90,8 +102,7 @@ controller_interface::return_type CartesianEndEffectorController::update(
     command_initialized_ = true;
   }
 
-  const double target_age =
-      time.seconds() - latest_vr_pose_time_sec_.load(std::memory_order_relaxed);
+  const double target_age = time.seconds() - target_stamp_sec;
   if (!has_target || target_age > command_timeout_sec_) {
     reference_initialized_ = false;
     filterTargetPose_(current_position, current_orientation, period.seconds());
@@ -102,7 +113,7 @@ controller_interface::return_type CartesianEndEffectorController::update(
 
   if (!reference_initialized_) {
     resetReference_(vr_position, vr_orientation, current_position, current_orientation);
-    consumed_vr_pose_sequence_ = latest_vr_pose_sequence_.load(std::memory_order_acquire);
+    consumed_vr_pose_sequence_ = target_sequence;
   }
 
   Eigen::Vector3d target_position;
@@ -126,6 +137,7 @@ CallbackReturn CartesianEndEffectorController::on_init() {
     auto_declare<double>("max_angular_velocity", 0.70);
     auto_declare<double>("workspace_radius", 0.35);
     auto_declare<double>("min_z", 0.05);
+    auto_declare<std::vector<double>>("vr_to_robot_rotation_rpy", {0.0, 0.0, 0.0});
     franka_cartesian_pose_ =
         std::make_unique<franka_semantic_components::FrankaCartesianPoseInterface>(
             franka_semantic_components::FrankaCartesianPoseInterface(false));
@@ -152,12 +164,27 @@ CallbackReturn CartesianEndEffectorController::on_configure(
   workspace_radius_ = get_node()->get_parameter("workspace_radius").as_double();
   min_z_ = get_node()->get_parameter("min_z").as_double();
 
+  std::vector<double> vr_to_robot_rotation_rpy;
+  if (!loadVectorParameter_("vr_to_robot_rotation_rpy", 3, vr_to_robot_rotation_rpy)) {
+    return CallbackReturn::FAILURE;
+  }
+
   if (vr_position_scale_ <= 0.0 || command_timeout_sec_ <= 0.0 ||
       filter_time_constant_sec_ < 0.0 || max_linear_velocity_ <= 0.0 ||
       max_angular_velocity_ <= 0.0 || workspace_radius_ <= 0.0 || min_z_ < 0.0) {
     RCLCPP_FATAL(get_node()->get_logger(), "Invalid Cartesian end-effector controller parameter");
     return CallbackReturn::FAILURE;
   }
+  if (!std::all_of(vr_to_robot_rotation_rpy.begin(), vr_to_robot_rotation_rpy.end(),
+                   [](double value) { return std::isfinite(value); })) {
+    RCLCPP_FATAL(get_node()->get_logger(), "vr_to_robot_rotation_rpy must contain finite values");
+    return CallbackReturn::FAILURE;
+  }
+
+  const Eigen::AngleAxisd roll(vr_to_robot_rotation_rpy[0], Eigen::Vector3d::UnitX());
+  const Eigen::AngleAxisd pitch(vr_to_robot_rotation_rpy[1], Eigen::Vector3d::UnitY());
+  const Eigen::AngleAxisd yaw(vr_to_robot_rotation_rpy[2], Eigen::Vector3d::UnitZ());
+  vr_to_robot_rotation_ = (yaw * pitch * roll).toRotationMatrix();
 
   target_pose_subscriber_ = get_node()->create_subscription<geometry_msgs::msg::PoseStamped>(
       target_pose_topic_, rclcpp::SystemDefaultsQoS(),
@@ -193,11 +220,29 @@ CallbackReturn CartesianEndEffectorController::on_deactivate(
 void CartesianEndEffectorController::targetPoseCallback_(
     const geometry_msgs::msg::PoseStamped::SharedPtr msg) {
   if (rclcpp::Time(msg->header.stamp).nanoseconds() == 0) {
+    latest_vr_pose_sequence_.fetch_add(1, std::memory_order_acq_rel);
+    latest_vr_pose_time_sec_.store(0.0, std::memory_order_release);
     latest_vr_pose_valid_.store(false, std::memory_order_release);
     latest_vr_pose_sequence_.fetch_add(1, std::memory_order_acq_rel);
     return;
   }
 
+  const Eigen::Vector3d position(msg->pose.position.x, msg->pose.position.y, msg->pose.position.z);
+  const Eigen::Quaterniond orientation(msg->pose.orientation.w,
+                                       msg->pose.orientation.x,
+                                       msg->pose.orientation.y,
+                                       msg->pose.orientation.z);
+  if (!hasFiniteEntries(position) || !hasFiniteEntries(orientation) || orientation.norm() < 1e-9) {
+    latest_vr_pose_sequence_.fetch_add(1, std::memory_order_acq_rel);
+    latest_vr_pose_time_sec_.store(0.0, std::memory_order_release);
+    latest_vr_pose_valid_.store(false, std::memory_order_release);
+    latest_vr_pose_sequence_.fetch_add(1, std::memory_order_acq_rel);
+    RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 2000,
+                         "Ignoring invalid Cartesian teleop target pose");
+    return;
+  }
+
+  latest_vr_pose_sequence_.fetch_add(1, std::memory_order_acq_rel);
   latest_vr_pose_[0].store(msg->pose.position.x, std::memory_order_relaxed);
   latest_vr_pose_[1].store(msg->pose.position.y, std::memory_order_relaxed);
   latest_vr_pose_[2].store(msg->pose.position.z, std::memory_order_relaxed);
@@ -213,8 +258,14 @@ void CartesianEndEffectorController::targetPoseCallback_(
 
 bool CartesianEndEffectorController::readLatestVrPose_(
     Eigen::Vector3d& position,
-    Eigen::Quaterniond& orientation) const {
+    Eigen::Quaterniond& orientation,
+    double& stamp_sec,
+    uint64_t& sequence) const {
   if (!latest_vr_pose_valid_.load(std::memory_order_acquire)) {
+    return false;
+  }
+  sequence = latest_vr_pose_sequence_.load(std::memory_order_acquire);
+  if ((sequence % 2) != 0) {
     return false;
   }
   position = Eigen::Vector3d(latest_vr_pose_[0].load(std::memory_order_relaxed),
@@ -225,6 +276,12 @@ bool CartesianEndEffectorController::readLatestVrPose_(
       latest_vr_pose_[3].load(std::memory_order_relaxed),
       latest_vr_pose_[4].load(std::memory_order_relaxed),
       latest_vr_pose_[5].load(std::memory_order_relaxed)));
+  stamp_sec = latest_vr_pose_time_sec_.load(std::memory_order_acquire);
+  const uint64_t sequence_after = latest_vr_pose_sequence_.load(std::memory_order_acquire);
+  if (sequence != sequence_after || (sequence_after % 2) != 0 || !hasFiniteEntries(position) ||
+      !hasFiniteEntries(orientation) || stamp_sec <= 0.0) {
+    return false;
+  }
   return true;
 }
 
@@ -246,6 +303,7 @@ void CartesianEndEffectorController::computeTargetPose_(
     Eigen::Vector3d& target_position,
     Eigen::Quaterniond& target_orientation) {
   Eigen::Vector3d delta_position = (vr_position - reference_vr_position_) * vr_position_scale_;
+  delta_position = vr_to_robot_rotation_ * delta_position;
   const double delta_norm = delta_position.norm();
   if (delta_norm > workspace_radius_) {
     delta_position *= workspace_radius_ / delta_norm;
@@ -256,7 +314,10 @@ void CartesianEndEffectorController::computeTargetPose_(
 
   Eigen::Quaterniond delta_orientation =
       normalizedOrIdentity(vr_orientation) * reference_vr_orientation_.inverse();
-  target_orientation = normalizedOrIdentity(delta_orientation * reference_ee_orientation_);
+  const Eigen::Quaterniond rotated_delta(vr_to_robot_rotation_ *
+                                         delta_orientation.toRotationMatrix() *
+                                         vr_to_robot_rotation_.transpose());
+  target_orientation = normalizedOrIdentity(rotated_delta * reference_ee_orientation_);
 }
 
 void CartesianEndEffectorController::filterTargetPose_(
@@ -284,6 +345,19 @@ void CartesianEndEffectorController::filterTargetPose_(
                                                         filtered_orientation);
   }
   commanded_orientation_ = normalizedOrIdentity(filtered_orientation);
+}
+
+bool CartesianEndEffectorController::loadVectorParameter_(
+    const std::string& parameter_name,
+    size_t expected_size,
+    std::vector<double>& values) const {
+  values = get_node()->get_parameter(parameter_name).as_double_array();
+  if (values.size() != expected_size) {
+    RCLCPP_FATAL(get_node()->get_logger(), "%s must contain exactly %zu values",
+                 parameter_name.c_str(), expected_size);
+    return false;
+  }
+  return true;
 }
 
 }  // namespace franka_fr3_arm_controllers

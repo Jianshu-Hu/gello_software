@@ -18,6 +18,7 @@
 #include <atomic>
 #include <memory>
 #include <string>
+#include <vector>
 
 #include <Eigen/Dense>
 #include <controller_interface/controller_interface.hpp>
@@ -46,7 +47,10 @@ class CartesianEndEffectorController : public controller_interface::ControllerIn
   static constexpr size_t kPoseValues = 7;
 
   void targetPoseCallback_(const geometry_msgs::msg::PoseStamped::SharedPtr msg);
-  bool readLatestVrPose_(Eigen::Vector3d& position, Eigen::Quaterniond& orientation) const;
+  bool readLatestVrPose_(Eigen::Vector3d& position,
+                         Eigen::Quaterniond& orientation,
+                         double& stamp_sec,
+                         uint64_t& sequence) const;
   void resetReference_(const Eigen::Vector3d& vr_position,
                        const Eigen::Quaterniond& vr_orientation,
                        const Eigen::Vector3d& current_position,
@@ -58,6 +62,9 @@ class CartesianEndEffectorController : public controller_interface::ControllerIn
   void filterTargetPose_(const Eigen::Vector3d& target_position,
                          const Eigen::Quaterniond& target_orientation,
                          double dt);
+  bool loadVectorParameter_(const std::string& parameter_name,
+                            size_t expected_size,
+                            std::vector<double>& values) const;
 
   std::unique_ptr<franka_semantic_components::FrankaCartesianPoseInterface> franka_cartesian_pose_;
   rclcpp::Subscription<geometry_msgs::msg::PoseStamped>::SharedPtr target_pose_subscriber_;
@@ -86,6 +93,7 @@ class CartesianEndEffectorController : public controller_interface::ControllerIn
   double max_angular_velocity_{0.70};
   double workspace_radius_{0.35};
   double min_z_{0.05};
+  Eigen::Matrix3d vr_to_robot_rotation_{Eigen::Matrix3d::Identity()};
 };
 
 }  // namespace franka_fr3_arm_controllers

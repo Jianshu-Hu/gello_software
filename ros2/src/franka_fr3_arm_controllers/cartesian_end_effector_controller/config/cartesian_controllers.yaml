@@ -26,6 +26,7 @@ cartesian_end_effector_controller:
     max_angular_velocity: 0.60
     workspace_radius: 0.30
     min_z: 0.05
+    vr_to_robot_rotation_rpy: [0.0, 0.0, 0.0]
 
 vr_cartesian_teleop_node:
   ros__parameters:
