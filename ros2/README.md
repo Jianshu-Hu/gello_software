@@ -11,12 +11,23 @@ Cartesian pose interface through `franka_fr3_arm_controllers/CartesianEndEffecto
 Build and launch it on the robot server:
 
 ```bash
-cd /workspace/ros2
+cd /home/landau/real-exp-work-branch/gello_software/ros2
 colcon build --packages-select franka_fr3_arm_controllers
-source install/setup.bash
+source /home/landau/real-exp-work-branch/gello_software/ros2/install/setup.bash
+ros2 pkg prefix franka_fr3_arm_controllers
 ros2 launch franka_fr3_arm_controllers franka_vr_cartesian_end_effector.launch.py \
   robot_ip:=172.16.0.2
 ```
+
+The `ros2 pkg prefix franka_fr3_arm_controllers` check must print:
+
+```text
+/home/landau/real-exp-work-branch/gello_software/ros2/install/franka_fr3_arm_controllers
+```
+
+If it prints `/home/landau/Documents/gello_software/...`, the shell is using
+the wrong overlay. Source the workspace-level setup file above again. Do not
+source the package install directory itself.
 
 If the VR tracking frame is rotated relative to `fr3_link0`, tune the fixed
 frame rotation at launch time:

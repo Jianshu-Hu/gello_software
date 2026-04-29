@@ -314,10 +314,22 @@ moving while tracking was lost.
 Build the ROS 2 workspace from the `ros2` directory:
 
 ```bash
-cd /home/pair/real_experiment_on\ _franka/gello_software/ros2
+cd /home/landau/real-exp-work-branch/gello_software/ros2
 colcon build --packages-select franka_fr3_arm_controllers
-source install/setup.bash
+source /home/landau/real-exp-work-branch/gello_software/ros2/install/setup.bash
+ros2 pkg prefix franka_fr3_arm_controllers
 ```
+
+The package prefix check must resolve to this workspace:
+
+```text
+/home/landau/real-exp-work-branch/gello_software/ros2/install/franka_fr3_arm_controllers
+```
+
+If it resolves to `/home/landau/Documents/gello_software/...`, the shell is
+using the wrong ROS overlay. Source the workspace-level setup file above again.
+Do not source the package install directory itself; source `install/setup.bash`
+from the workspace you want to run.
 
 Launch the direct Cartesian VR teleoperation stack:
 
