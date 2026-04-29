@@ -334,7 +334,7 @@ from the workspace you want to run.
 Launch the direct Cartesian VR teleoperation stack:
 
 ```bash
-ros2 launch franka_fr3_arm_controllers franka_vr_cartesian_end_effector.launch.py \
+ros2 launch franka_fr3_arm_controllers cartesian_teleop.launch.py \
   robot_ip:=172.16.0.2
 ```
 
@@ -342,7 +342,7 @@ If the VR frame is rotated relative to the robot base, pass the fixed frame
 rotation as roll, pitch, yaw radians:
 
 ```bash
-ros2 launch franka_fr3_arm_controllers franka_vr_cartesian_end_effector.launch.py \
+ros2 launch franka_fr3_arm_controllers cartesian_teleop.launch.py \
   robot_ip:=172.16.0.2 \
   vr_to_robot_rotation_rpy:=0.0,0.0,1.5708
 ```
@@ -350,7 +350,7 @@ ros2 launch franka_fr3_arm_controllers franka_vr_cartesian_end_effector.launch.p
 For fake hardware:
 
 ```bash
-ros2 launch franka_fr3_arm_controllers franka_vr_cartesian_end_effector.launch.py \
+ros2 launch franka_fr3_arm_controllers cartesian_teleop.launch.py \
   use_fake_hardware:=true \
   fake_sensor_commands:=true
 ```

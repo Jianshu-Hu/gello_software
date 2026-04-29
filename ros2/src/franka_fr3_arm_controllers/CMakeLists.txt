@@ -105,6 +105,11 @@ install(
 )
 
 install(
+  FILES launch/cartesian_teleop.launch.py
+  DESTINATION share/${PROJECT_NAME}/launch
+)
+
+install(
   PROGRAMS cartesian_end_effector_controller/scripts/vr_cartesian_teleop_node.py
   DESTINATION lib/${PROJECT_NAME}
   RENAME vr_cartesian_teleop_node

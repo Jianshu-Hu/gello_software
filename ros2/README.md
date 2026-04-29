@@ -15,7 +15,7 @@ cd /home/landau/real-exp-work-branch/gello_software/ros2
 colcon build --packages-select franka_fr3_arm_controllers
 source /home/landau/real-exp-work-branch/gello_software/ros2/install/setup.bash
 ros2 pkg prefix franka_fr3_arm_controllers
-ros2 launch franka_fr3_arm_controllers franka_vr_cartesian_end_effector.launch.py \
+ros2 launch franka_fr3_arm_controllers cartesian_teleop.launch.py \
   robot_ip:=172.16.0.2
 ```
 
@@ -33,7 +33,7 @@ If the VR tracking frame is rotated relative to `fr3_link0`, tune the fixed
 frame rotation at launch time:
 
 ```bash
-ros2 launch franka_fr3_arm_controllers franka_vr_cartesian_end_effector.launch.py \
+ros2 launch franka_fr3_arm_controllers cartesian_teleop.launch.py \
   robot_ip:=172.16.0.2 \
   vr_to_robot_rotation_rpy:=0.0,0.0,1.5708
 ```
