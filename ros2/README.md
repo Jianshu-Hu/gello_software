@@ -2,6 +2,34 @@
 
 This folder contains all required ROS 2 packages for using GELLO with a Franka FR3 robot.
 
+## Direct Cartesian End-Effector VR Teleoperation
+
+This workspace includes a direct Cartesian VR teleoperation path for the Franka
+FR3 end effector. It bypasses the older Python IK path and commands Franka's
+Cartesian pose interface through `franka_fr3_arm_controllers/CartesianEndEffectorController`.
+
+Build and launch it on the robot server:
+
+```bash
+cd /workspace/ros2
+colcon build --packages-select franka_fr3_arm_controllers
+source install/setup.bash
+ros2 launch franka_fr3_arm_controllers franka_vr_cartesian_end_effector.launch.py \
+  robot_ip:=172.16.0.2
+```
+
+If the VR tracking frame is rotated relative to `fr3_link0`, tune the fixed
+frame rotation at launch time:
+
+```bash
+ros2 launch franka_fr3_arm_controllers franka_vr_cartesian_end_effector.launch.py \
+  robot_ip:=172.16.0.2 \
+  vr_to_robot_rotation_rpy:=0.0,0.0,1.5708
+```
+
+The detailed implementation and robot-server test checklist are documented in
+[`src/franka_fr3_arm_controllers/cartesian_end_effector_controller/README.md`](src/franka_fr3_arm_controllers/cartesian_end_effector_controller/README.md).
+
 ## LeRobot Data Bridge
 
 This workspace now also includes `franka_lerobot_data_bridge`, a ROS 2 node that listens to:
