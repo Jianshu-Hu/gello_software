@@ -292,7 +292,7 @@ class LeRobotDataBridge(Node):
         self.declare_parameter("include_gripper", True)
         self.declare_parameter("include_right_arm", True)
         self.declare_parameter("require_gripper_freshness", False)
-        self.declare_parameter("arm_action_source", "robot_state")
+        self.declare_parameter("arm_action_source", "topic")
 
         self.declare_parameter("left_robot_joint_state_topic", "/left/franka/joint_states")
         self.declare_parameter("left_arm_action_topic", "/left/franka/commanded_joint_states")
