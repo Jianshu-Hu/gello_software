@@ -7,7 +7,7 @@ LEFT:
   num_arm_joints: 7
   joint_signs: [1, -1, 1, 1, 1, -1, 1]
   gripper: true
-  best_offsets: [0, 3.142, 3.142, 4.712, 3.142, 4.712, 3.652] # rad
+  best_offsets: [0.397, 3.188, 2.813, 4.639, 3.230, 4.829, 3.770] # rad
   gripper_range_rad: [2.82856, 3.55931]
   # Optional Dynamixel control parameters for all arm joints (+ gripper):
   # Warning: If using the OpenRB-150 instead of the U2D2 communication converter,
@@ -26,7 +26,7 @@ RIGHT:
   num_arm_joints: 7
   joint_signs: [1, -1, 1, 1, 1, -1, 1]
   gripper: true
-  best_offsets: [3.142, 3.142, 1.571, 4.712, 4.712, 4.712, 3.993] # rad
+  best_offsets: [2.693, 3.089, 1.983, 4.675, 4.536, 4.843, 3.901] # rad
   gripper_range_rad: [1.3083, 2.041]
   # Optional Dynamixel control parameters for all arm joints (+ gripper):
   # Warning: If using the OpenRB-150 instead of the U2D2 communication converter,
