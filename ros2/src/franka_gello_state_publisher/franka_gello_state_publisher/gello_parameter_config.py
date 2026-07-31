@@ -97,6 +97,16 @@ class GelloParameterConfig:
             ),
             ParameterConfig(
                 ParameterDescriptor(
+                    name="dynamixel_goal_current",
+                    type=ParameterType.PARAMETER_INTEGER_ARRAY,
+                    description="Current-based position limits in mA",
+                    additional_constraints="Use values appropriate for the active power source",
+                    read_only=False,
+                ),
+                [600] * (self.DEFAULT_NUM_JOINTS + 1),
+            ),
+            ParameterConfig(
+                ParameterDescriptor(
                     name="dynamixel_kp_i",
                     type=ParameterType.PARAMETER_INTEGER_ARRAY,
                     description="Integral gains",
@@ -128,7 +138,7 @@ class GelloParameterConfig:
             ParameterConfig(
                 ParameterDescriptor(
                     name="dynamixel_goal_position",
-                    type=ParameterType.PARAMETER_INTEGER_ARRAY,
+                    type=ParameterType.PARAMETER_DOUBLE_ARRAY,
                     description="Goal positions",
                     read_only=False,
                 ),
