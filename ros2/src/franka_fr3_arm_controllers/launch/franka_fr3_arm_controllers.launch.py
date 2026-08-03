@@ -36,6 +36,11 @@ def generate_robot_nodes(context):
     config_file_name = LaunchConfiguration("robot_config_file").perform(context)
     deployment_mode = LaunchConfiguration("deployment_mode").perform(context)
     deployment_mode_enabled = deployment_mode.lower() == "true"
+    safe_mode = LaunchConfiguration("safe_mode").perform(context).strip().lower()
+    if safe_mode not in {"off", "monitor", "enforce"}:
+        raise ValueError("safe_mode must be one of: off, monitor, enforce")
+    if deployment_mode_enabled and safe_mode != "off":
+        raise ValueError("safe_mode is only available with the collection controller")
     package_config_dir = FindPackageShare("franka_fr3_arm_controllers").perform(context)
     config_file = os.path.join(package_config_dir, "config", config_file_name)
     controllers_yaml = os.path.join(package_config_dir, "config", "controllers.yaml")
@@ -54,7 +59,16 @@ def generate_robot_nodes(context):
             if deployment_mode_enabled
             else "joint_impedance_controller"
         )
-        yaml.safe_dump({}, override_file)
+        parameter_override = {}
+        if not deployment_mode_enabled:
+            parameter_override = {
+                "/**": {
+                    "joint_impedance_controller": {
+                        "ros__parameters": {"safe_mode": safe_mode}
+                    }
+                }
+            }
+        yaml.safe_dump(parameter_override, override_file)
         override_file.flush()
         override_file.close()
         nodes.append(
@@ -135,6 +149,11 @@ def generate_launch_description():
                 "deployment_mode",
                 default_value="false",
                 description="Load the deployment controller instead of the teleoperation controller.",
+            ),
+            DeclareLaunchArgument(
+                "safe_mode",
+                default_value="off",
+                description="Collection q-goal safety mode: off, monitor, or enforce.",
             ),
             OpaqueFunction(function=generate_robot_nodes),
         ]

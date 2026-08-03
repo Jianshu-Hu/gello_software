@@ -22,6 +22,12 @@
   joint_impedance_controller:
     ros__parameters:
       k_alpha: 0.99
+      safe_mode: off
+      safe_position_margin_rad: 0.02
+      safe_max_velocity_rad_s: [2.096, 2.096, 2.096, 2.096, 4.208, 3.344, 4.208]
+      safe_max_acceleration_rad_s2: [8.0, 8.0, 8.0, 8.0, 8.0, 8.0, 8.0]
+      safe_max_tracking_error_rad: [0.12, 0.12, 0.12, 0.12, 0.20, 0.25, 0.30]
+      safe_diagnostic_publish_rate_hz: 25.0
       k_gains:
         - 240.0
         - 240.0

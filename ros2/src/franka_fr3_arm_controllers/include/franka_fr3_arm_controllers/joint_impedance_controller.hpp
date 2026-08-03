@@ -14,13 +14,14 @@
 
 #pragma once
 
-#include <array>
 #include <Eigen/Eigen>
+#include <array>
 #include <controller_interface/controller_interface.hpp>
 #include <rclcpp/rclcpp.hpp>
 #include <sensor_msgs/msg/joint_state.hpp>
 #include <string>
 #include "franka_fr3_arm_controllers/motion_generator.hpp"
+#include "franka_fr3_arm_controllers/safe_joint_target_limiter.hpp"
 
 using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
 
@@ -44,6 +45,8 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   CallbackReturn on_deactivate(const rclcpp_lifecycle::State& previous_state) override;
 
  private:
+  enum class SafeMode { kOff, kMonitor, kEnforce };
+
   std::string arm_id_;
   std::string namespace_prefix_;
   const int num_joints = 7;
@@ -63,15 +66,26 @@ class JointImpedanceController : public controller_interface::ControllerInterfac
   rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscriber_ = nullptr;
   rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr commanded_joint_state_publisher_ =
       nullptr;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr raw_commanded_joint_state_publisher_ =
+      nullptr;
+  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr safe_commanded_joint_state_publisher_ =
+      nullptr;
   bool gello_position_values_valid_ = false;
   std::array<double, 7> gello_position_values_{0, 0, 0, 0, 0, 0, 0};
   rclcpp::Time last_joint_state_time_;
   std::array<std::string, 7> joint_names_;
+  SafeMode safe_mode_{SafeMode::kOff};
+  SafeJointTargetLimiter safe_target_limiter_;
+  double safe_diagnostic_publish_period_sec_{0.04};
+  rclcpp::Time last_safe_diagnostic_publish_time_;
 
   Vector7d calculateTauDGains_(const Vector7d& q_goal);
+  bool configureSafeMode_();
   bool validateGains_(const std::vector<double>& gains, const std::string& gains_name);
   bool initializeMotionGenerator_();
   void publishCommandedJointState_(const Vector7d& q_goal);
+  void publishSafeModeDiagnostics_(const Vector7d& raw_target,
+                                   const SafeJointTargetLimiter::Result& result);
   void updateJointStates_();
   void validateGelloPositions_(const sensor_msgs::msg::JointState& msg);
   void resetCommandTracking_(const rclcpp::Time& reference_time);
