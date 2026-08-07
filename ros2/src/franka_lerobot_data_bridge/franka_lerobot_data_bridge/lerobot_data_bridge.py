@@ -20,6 +20,8 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - depends on robot computer env
     pylibfranka = None
 
+GRIPPER_ACTION_REPRESENTATION = "binary_open_close"  # "absolute_width" or "binary_open_close"
+
 
 def _stamp_to_float_seconds(sec: int, nanosec: int) -> float:
     return float(sec) + (float(nanosec) * 1e-9)
@@ -1073,7 +1075,13 @@ class LeRobotDataBridge(Node):
         return "absolute_joint_position"
 
     def _gripper_action_representation(self) -> str:
-        return "binary_open_close"
+        if GRIPPER_ACTION_REPRESENTATION not in {"absolute_width", "binary_open_close"}:
+            raise ValueError(
+                "Unsupported GRIPPER_ACTION_REPRESENTATION "
+                f"{GRIPPER_ACTION_REPRESENTATION!r}. Expected 'absolute_width' or "
+                "'binary_open_close'."
+            )
+        return GRIPPER_ACTION_REPRESENTATION
 
     def _sample_is_ready(self) -> tuple[bool, str]:
         for arm_name in self._required_arms():

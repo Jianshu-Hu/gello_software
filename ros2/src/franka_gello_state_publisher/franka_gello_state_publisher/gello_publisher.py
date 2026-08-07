@@ -11,6 +11,8 @@ from franka_gello_state_publisher.gello_parameter_config import (
     GelloParameterConfig,
 )
 
+GRIPPER_COMMAND_MODE = "binary_open_close"  # "absolute_width" or "binary_open_close"
+
 
 class GelloPublisher(Node):
     """ROS2 node for publishing GELLO device joint states and handling parameter updates."""
@@ -71,6 +73,19 @@ class GelloPublisher(Node):
 
         return self._latched_gripper_command
 
+    def _continuous_gripper_command(self, gripper_position: float) -> float:
+        return max(0.0, min(1.0, gripper_position))
+
+    def _gripper_command(self, gripper_position: float) -> float:
+        if GRIPPER_COMMAND_MODE == "absolute_width":
+            return self._continuous_gripper_command(gripper_position)
+        if GRIPPER_COMMAND_MODE == "binary_open_close":
+            return self._binary_gripper_command(gripper_position)
+        raise ValueError(
+            "Unsupported GRIPPER_COMMAND_MODE "
+            f"{GRIPPER_COMMAND_MODE!r}. Expected 'absolute_width' or 'binary_open_close'."
+        )
+
     def publish_joint_jog(self) -> None:
         """Publish current joint states and gripper position."""
         JOINT_NAMES = [
@@ -91,7 +106,7 @@ class GelloPublisher(Node):
         arm_joint_states.position = gello_arm_joints.tolist()
 
         gripper_joint_states = Float32()
-        gripper_joint_states.data = self._binary_gripper_command(gripper_position)
+        gripper_joint_states.data = self._gripper_command(gripper_position)
         self.arm_joint_publisher.publish(arm_joint_states)
         self.gripper_joint_publisher.publish(gripper_joint_states)
 
