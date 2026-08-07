@@ -30,6 +30,7 @@ find_package(rclcpp REQUIRED)
 find_package(controller_interface REQUIRED)
 find_package(pluginlib REQUIRED)
 find_package(rclcpp_lifecycle REQUIRED)
+find_package(sensor_msgs REQUIRED)
 find_package(hardware_interface REQUIRED)
 find_package(franka_msgs REQUIRED)
 find_package(Eigen3 REQUIRED)
@@ -43,7 +44,8 @@ add_library(
         SHARED
         src/joint_impedance_controller.cpp
         src/deployment_joint_impedance_controller.cpp
-        src/motion_generator.cpp)
+        src/motion_generator.cpp
+        src/safe_joint_target_limiter.cpp)
 target_include_directories(
         ${PROJECT_NAME}
         PUBLIC
@@ -57,6 +59,7 @@ ament_target_dependencies(
         pluginlib
         rclcpp
         rclcpp_lifecycle
+        sensor_msgs
         franka_semantic_components
         moveit_core
         moveit_msgs
@@ -124,6 +127,14 @@ ament_add_gtest(
 )
   if(TARGET test_joint_impedance_controller)
     target_link_libraries(test_joint_impedance_controller ${PROJECT_NAME})
+  endif()
+
+  ament_add_gtest(
+          test_safe_joint_target_limiter
+          test/safe_joint_target_limiter_test.cpp
+  )
+  if(TARGET test_safe_joint_target_limiter)
+    target_link_libraries(test_safe_joint_target_limiter ${PROJECT_NAME})
   endif()
 endif()
 
