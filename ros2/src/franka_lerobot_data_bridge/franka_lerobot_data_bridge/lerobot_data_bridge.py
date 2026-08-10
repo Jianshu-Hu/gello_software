@@ -20,7 +20,7 @@ try:
 except ModuleNotFoundError:  # pragma: no cover - depends on robot computer env
     pylibfranka = None
 
-GRIPPER_ACTION_REPRESENTATION = "binary_open_close"  # "absolute_width" or "binary_open_close"
+GRIPPER_ACTION_REPRESENTATION = "absolute_width"  # "absolute_width" or "binary_open_close"
 
 
 def _stamp_to_float_seconds(sec: int, nanosec: int) -> float:

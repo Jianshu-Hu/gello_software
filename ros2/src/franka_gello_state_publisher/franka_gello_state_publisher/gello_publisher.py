@@ -11,7 +11,7 @@ from franka_gello_state_publisher.gello_parameter_config import (
     GelloParameterConfig,
 )
 
-GRIPPER_COMMAND_MODE = "binary_open_close"  # "absolute_width" or "binary_open_close"
+GRIPPER_COMMAND_MODE = "absolute_width"  # "absolute_width" or "binary_open_close"
 
 
 class GelloPublisher(Node):
