@@ -1,3 +1,8 @@
+import sys
+import time
+from pathlib import Path
+
+import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
 from rclpy.node import Node
@@ -10,6 +15,20 @@ from franka_gello_state_publisher.gello_parameter_config import (
     ParameterConfig,
     GelloParameterConfig,
 )
+
+
+def _add_repository_root_to_path() -> None:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "utils" / "limit.py").is_file():
+            if str(parent) not in sys.path:
+                sys.path.insert(0, str(parent))
+            return
+    raise ImportError("Could not locate the repository-level utils/limit.py.")
+
+
+_add_repository_root_to_path()
+
+from utils.limit import JointPositionLimiter, SustainedViolationMonitor  # noqa: E402
 
 GRIPPER_COMMAND_MODE = "absolute_width"  # "absolute_width" or "binary_open_close"
 
@@ -29,6 +48,8 @@ class GelloPublisher(Node):
             self.get_parameter("gripper_binary_close_threshold").value
         )
         self._latched_gripper_command: float | None = None
+        self._joint_limiter = JointPositionLimiter(max_dt=1.0 / self.PUBLISHING_RATE * 2.0)
+        self._unsafe_target_monitor = SustainedViolationMonitor(stop_after_s=1.0)
 
         hardware_params: GelloHardwareParams = self._setup_hardware_parameters()
 
@@ -99,11 +120,42 @@ class GelloPublisher(Node):
         ]
         [gello_arm_joints, gripper_position] = self.gello_hardware.read_joint_states()
 
+        now = time.monotonic()
+        raw_target = np.asarray(gello_arm_joints, dtype=np.float64)
+        if not self._joint_limiter.initialized and not np.all(np.isfinite(raw_target)):
+            violation_names = ("non_finite",)
+            safe_target = None
+        else:
+            limit_result = self._joint_limiter.filter(raw_target, now)
+            violation_names = limit_result.violation.names
+            safe_target = limit_result.position
+
+        if violation_names:
+            should_stop = self._unsafe_target_monitor.update(True, now)
+            unsafe_duration = self._unsafe_target_monitor.duration(now)
+            self.get_logger().warning(
+                "Filtering unsafe GELLO joint target: "
+                f"{', '.join(violation_names)} violation; duration={unsafe_duration:.3f}s",
+                throttle_duration_sec=1.0,
+            )
+            if should_stop:
+                self.get_logger().fatal(
+                    "Unsafe GELLO targets persisted for at least "
+                    f"{self._unsafe_target_monitor.stop_after_s:.1f}s; stopping teleoperation."
+                )
+                rclpy.try_shutdown()
+                return
+        else:
+            self._unsafe_target_monitor.update(False, now)
+
+        if safe_target is None:
+            return
+
         arm_joint_states = JointState()
         arm_joint_states.header.stamp = self.get_clock().now().to_msg()
         arm_joint_states.name = JOINT_NAMES
         arm_joint_states.header.frame_id = "fr3_link0"
-        arm_joint_states.position = gello_arm_joints.tolist()
+        arm_joint_states.position = safe_target.tolist()
 
         gripper_joint_states = Float32()
         gripper_joint_states.data = self._gripper_command(gripper_position)

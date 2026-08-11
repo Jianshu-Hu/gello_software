@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
+import sys
 import time
 from dataclasses import dataclass
+from pathlib import Path
 from typing import Any
 
 import numpy as np
@@ -14,6 +16,20 @@ from rclpy.node import Node
 from sensor_msgs.msg import Image, JointState
 from std_msgs.msg import Float32
 from std_srvs.srv import SetBool
+
+
+def _add_repository_root_to_path() -> None:
+    for parent in Path(__file__).resolve().parents:
+        if (parent / "utils" / "limit.py").is_file():
+            if str(parent) not in sys.path:
+                sys.path.insert(0, str(parent))
+            return
+    raise ImportError("Could not locate the repository-level utils/limit.py.")
+
+
+_add_repository_root_to_path()
+
+from utils.limit import JointPositionLimiter  # noqa: E402
 
 try:
     import pylibfranka
@@ -228,6 +244,11 @@ class LeRobotDataBridge(Node):
         self._deployment_enable_clients: dict[str, Any] = {}
         self._deployment_switch_clients: dict[str, Any] = {}
         self._last_published_gripper_command: dict[str, float | None] = {"left": None, "right": None}
+        limiter_max_dt = max(2.0 / self.sample_rate_hz, 0.1)
+        self._deployment_joint_limiters = {
+            "left": JointPositionLimiter(max_dt=limiter_max_dt),
+            "right": JointPositionLimiter(max_dt=limiter_max_dt),
+        }
         self._activation_service = None
 
         if self.deployment_mode:
@@ -839,6 +860,7 @@ class LeRobotDataBridge(Node):
             self._deployment_command_active = False
             self._latest_deployment_command = None
             self._latest_deployment_command_stamp_s = 0.0
+            self._reset_deployment_joint_limiters()
             self._set_deployment_controller_enabled(False)
             self.get_logger().info(
                 "Deployment bridge switched to STANDBY mode. Publishing hold commands only."
@@ -857,19 +879,50 @@ class LeRobotDataBridge(Node):
             and (self._now_s() - self._latest_deployment_command_stamp_s) <= self.command_max_age_sec
         )
 
+    def _reset_deployment_joint_limiters(self) -> None:
+        now_s = self._now_s()
+        for arm_name, limiter in self._deployment_joint_limiters.items():
+            sample = self.latest_robot_arm_samples[arm_name]
+            if sample is not None:
+                limiter.reset(sample.values, now_s)
+
     def _current_or_command_joint_target(self, arm_name: str) -> list[float]:
-        if self.latest_robot_arm_samples[arm_name] is None:
+        sample = self.latest_robot_arm_samples[arm_name]
+        if sample is None:
             return []
 
         if not self._command_is_fresh():
-            return list(self.latest_robot_arm_samples[arm_name].values)
+            self._deployment_joint_limiters[arm_name].reset(sample.values, self._now_s())
+            return list(sample.values)
 
         command_key = f"{arm_name}_joint_target"
         command = self._latest_deployment_command or {}
         target = command.get(command_key)
         if not isinstance(target, list) or not target:
-            return list(self.latest_robot_arm_samples[arm_name].values)
-        return [float(value) for value in target]
+            self._deployment_joint_limiters[arm_name].reset(sample.values, self._now_s())
+            return list(sample.values)
+
+        try:
+            result = self._deployment_joint_limiters[arm_name].filter(
+                target,
+                self._now_s(),
+                initial_position=sample.values,
+            )
+        except (TypeError, ValueError) as exc:
+            self._log_deployment_warning(
+                f"{arm_name}_invalid_joint_target",
+                f"Rejecting invalid {arm_name} deployment joint target: {exc}",
+            )
+            self._deployment_joint_limiters[arm_name].reset(sample.values, self._now_s())
+            return list(sample.values)
+
+        if result.clipped:
+            self._log_deployment_warning(
+                f"{arm_name}_joint_target_clipped",
+                f"Clipped unsafe {arm_name} deployment joint target for "
+                f"{', '.join(result.violation.names)} constraint violation.",
+            )
+        return result.position.tolist()
 
     def _arm_state_is_stable_for_hold(self, arm_name: str) -> bool:
         sample = self.latest_robot_arm_samples[arm_name]
