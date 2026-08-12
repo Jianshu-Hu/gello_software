@@ -35,6 +35,20 @@ ros2 launch franka_lerobot_data_bridge bridge.launch.py config_file:=example_sin
 
 If your namespaces or camera topic names differ from the defaults, update the selected YAML file before launching.
 
+For split data collection, run the bridge on the computer with the cameras and
+override its ZMQ bind address so the recorder can connect over the network:
+
+```bash
+ros2 launch franka_lerobot_data_bridge bridge.launch.py \
+  config_file:=example_duo.yaml \
+  publish_host:=192.168.50.13 publish_port:=5555
+```
+
+The control and data-server computers must use the same ROS 2 domain and a DDS
+network interface reachable from both hosts. The bridge receives robot and
+teleoperation topics over ROS 2; only its sample stream to
+`lerobot_collection.py` uses the ZMQ `publish_host`/`publish_port` socket.
+
 ## RealSense Camera Publisher
 
 This workspace also includes `franka_realsense_camera_publisher`, which publishes RGB image topics for up to three RealSense cameras.
