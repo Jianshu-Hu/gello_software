@@ -29,12 +29,18 @@ def generate_bridge_node(context):
 
     publish_host = LaunchConfiguration("publish_host").perform(context)
     publish_port = int(LaunchConfiguration("publish_port").perform(context))
+    command_host = LaunchConfiguration("command_host").perform(context)
+    command_port = int(LaunchConfiguration("command_port").perform(context))
     include_gripper_text = LaunchConfiguration("include_gripper").perform(context).strip().lower()
     overrides = {}
     if publish_host:
         overrides["publish_host"] = publish_host
     if publish_port > 0:
         overrides["publish_port"] = publish_port
+    if command_host:
+        overrides["command_host"] = command_host
+    if command_port > 0:
+        overrides["command_port"] = command_port
     if include_gripper_text in {"true", "false"}:
         overrides["include_gripper"] = include_gripper_text == "true"
 
@@ -66,6 +72,16 @@ def generate_launch_description():
                 "publish_port",
                 default_value="0",
                 description="Override the bridge ZMQ port; zero keeps YAML value.",
+            ),
+            DeclareLaunchArgument(
+                "command_host",
+                default_value="",
+                description="Override the deployment command ZMQ bind address; empty keeps YAML value.",
+            ),
+            DeclareLaunchArgument(
+                "command_port",
+                default_value="0",
+                description="Override the deployment command ZMQ port; zero keeps YAML value.",
             ),
             DeclareLaunchArgument(
                 "include_gripper",
