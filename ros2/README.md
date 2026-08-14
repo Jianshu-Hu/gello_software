@@ -313,17 +313,19 @@ This package provides a Joint Impedance controller for the Franka FR3. It subscr
 
 #### Key Features:
 - Implements a `JointImpedanceController` for controlling the robot's torques.
-- Subscribes to `/gello/joint_states` topic for the GELLO joint states.
+- Subscribes to the 1 kHz quintic reference on `/gello/joint_states`.
 
 #### Launch Files:
 - **`franka.launch.py`**: Launches the Franka robot ros interfaces.
 - **`franka_fr3_arm_controllers.launch.py`**: Launches the Joint Impedance controller.
 
 ### 2. `franka_gello_state_publisher`
-This package provides a ROS 2 node that reads input from the GELLO and publishes it as `sensor_msgs/msg/JointState` messages.
+This package provides a ROS 2 node that reads input from the GELLO and publishes
+low-rate absolute waypoints plus high-rate interpolated controller references.
 
 #### Key Features:
-- Publishes GELLO state to the `/gello/joint_states` topic.
+- Publishes accepted absolute GELLO waypoints to `/gello/raw_joint_states` at 15 Hz.
+- Publishes quintic controller references to `/gello/joint_states` at 1 kHz.
 - Optionally sets the internal control parameters of the Dynamixel motors. This allows for [virtual springs and dampers](#virtual-springs-dampers) in the GELLO joints.
 
 #### Launch Files:

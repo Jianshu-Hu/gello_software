@@ -28,9 +28,15 @@ def _add_repository_root_to_path() -> None:
 
 _add_repository_root_to_path()
 
-from utils.limit import JointPositionLimiter, SustainedViolationMonitor  # noqa: E402
+from utils.limit import (  # noqa: E402
+    FR3_SAFE_POSITION_LOWER_RAD,
+    FR3_SAFE_POSITION_UPPER_RAD,
+    SustainedViolationMonitor,
+)
+from utils.trajectory import QuinticJointTrajectory  # noqa: E402
 
 GRIPPER_COMMAND_MODE = "absolute_width"  # "absolute_width" or "binary_open_close"
+JOINT_NAMES = [f"fr3_joint{index}" for index in range(1, 8)]
 
 
 class GelloPublisher(Node):
@@ -38,9 +44,14 @@ class GelloPublisher(Node):
 
     def __init__(self) -> None:
         super().__init__("gello_publisher")
-        self.PUBLISHING_RATE = 25  # Hz
+        self.declare_parameter("command_rate_hz", 15.0)
+        self.declare_parameter("reference_rate_hz", 1000.0)
         self.declare_parameter("gripper_binary_open_threshold", 0.6)
         self.declare_parameter("gripper_binary_close_threshold", 0.4)
+        self.command_rate_hz = float(self.get_parameter("command_rate_hz").value)
+        self.reference_rate_hz = float(self.get_parameter("reference_rate_hz").value)
+        if self.command_rate_hz <= 0.0 or self.reference_rate_hz <= 0.0:
+            raise ValueError("GELLO command and reference rates must be positive.")
         self.gripper_binary_open_threshold = float(
             self.get_parameter("gripper_binary_open_threshold").value
         )
@@ -48,7 +59,7 @@ class GelloPublisher(Node):
             self.get_parameter("gripper_binary_close_threshold").value
         )
         self._latched_gripper_command: float | None = None
-        self._joint_limiter = JointPositionLimiter(max_dt=1.0 / self.PUBLISHING_RATE * 2.0)
+        self._joint_trajectory = QuinticJointTrajectory()
         self._unsafe_target_monitor = SustainedViolationMonitor(stop_after_s=1.0)
 
         hardware_params: GelloHardwareParams = self._setup_hardware_parameters()
@@ -59,7 +70,12 @@ class GelloPublisher(Node):
             self.get_logger().error(f"Failed to initialize GELLO hardware: {e}")
             raise
 
-        self.arm_joint_publisher = self.create_publisher(JointState, "gello/joint_states", 10)
+        self.raw_arm_joint_publisher = self.create_publisher(
+            JointState, "gello/raw_joint_states", 10
+        )
+        self.arm_reference_publisher = self.create_publisher(
+            JointState, "gello/joint_states", 10
+        )
         self.gripper_joint_publisher = self.create_publisher(
             Float32, "gripper/gripper_client/target_gripper_width_percent", 10
         )
@@ -69,8 +85,16 @@ class GelloPublisher(Node):
             ParameterEvent, "/parameter_events", self.parameter_event_callback, 10
         )
 
-        self.get_logger().info("Publishing GELLO joint states.")
-        self.timer = self.create_timer(1 / self.PUBLISHING_RATE, self.publish_joint_jog)
+        self.get_logger().info(
+            f"Publishing raw GELLO waypoints at {self.command_rate_hz:g} Hz and "
+            f"quintic controller references at {self.reference_rate_hz:g} Hz."
+        )
+        self.command_timer = self.create_timer(
+            1.0 / self.command_rate_hz, self.publish_raw_joint_target
+        )
+        self.reference_timer = self.create_timer(
+            1.0 / self.reference_rate_hz, self.publish_interpolated_joint_reference
+        )
 
     def parameter_event_callback(self, event: ParameterEvent) -> None:
         """Handle parameter change events for this node."""
@@ -107,34 +131,40 @@ class GelloPublisher(Node):
             f"{GRIPPER_COMMAND_MODE!r}. Expected 'absolute_width' or 'binary_open_close'."
         )
 
-    def publish_joint_jog(self) -> None:
-        """Publish current joint states and gripper position."""
-        JOINT_NAMES = [
-            "fr3_joint1",
-            "fr3_joint2",
-            "fr3_joint3",
-            "fr3_joint4",
-            "fr3_joint5",
-            "fr3_joint6",
-            "fr3_joint7",
-        ]
+    def _joint_state_message(self, positions: np.ndarray) -> JointState:
+        message = JointState()
+        message.header.stamp = self.get_clock().now().to_msg()
+        message.header.frame_id = "fr3_link0"
+        message.name = JOINT_NAMES
+        message.position = positions.tolist()
+        return message
+
+    def publish_raw_joint_target(self) -> None:
+        """Read and publish the low-rate absolute GELLO waypoint."""
         [gello_arm_joints, gripper_position] = self.gello_hardware.read_joint_states()
 
         now = time.monotonic()
         raw_target = np.asarray(gello_arm_joints, dtype=np.float64)
-        if not self._joint_limiter.initialized and not np.all(np.isfinite(raw_target)):
+        if raw_target.shape != (7,) or not np.all(np.isfinite(raw_target)):
             violation_names = ("non_finite",)
-            safe_target = None
+            accepted_target = None
         else:
-            limit_result = self._joint_limiter.filter(raw_target, now)
-            violation_names = limit_result.violation.names
-            safe_target = limit_result.position
+            position_violation = np.logical_or(
+                raw_target < FR3_SAFE_POSITION_LOWER_RAD,
+                raw_target > FR3_SAFE_POSITION_UPPER_RAD,
+            )
+            violation_names = ("position",) if np.any(position_violation) else ()
+            accepted_target = np.clip(
+                raw_target,
+                FR3_SAFE_POSITION_LOWER_RAD,
+                FR3_SAFE_POSITION_UPPER_RAD,
+            )
 
         if violation_names:
             should_stop = self._unsafe_target_monitor.update(True, now)
             unsafe_duration = self._unsafe_target_monitor.duration(now)
             self.get_logger().warning(
-                "Filtering unsafe GELLO joint target: "
+                "Rejecting or clipping unsafe raw GELLO waypoint: "
                 f"{', '.join(violation_names)} violation; duration={unsafe_duration:.3f}s",
                 throttle_duration_sec=1.0,
             )
@@ -148,19 +178,30 @@ class GelloPublisher(Node):
         else:
             self._unsafe_target_monitor.update(False, now)
 
-        if safe_target is None:
+        if accepted_target is None:
             return
 
-        arm_joint_states = JointState()
-        arm_joint_states.header.stamp = self.get_clock().now().to_msg()
-        arm_joint_states.name = JOINT_NAMES
-        arm_joint_states.header.frame_id = "fr3_link0"
-        arm_joint_states.position = safe_target.tolist()
+        try:
+            if not self._joint_trajectory.initialized:
+                self._joint_trajectory.reset(accepted_target, now)
+            else:
+                self._joint_trajectory.update_target(accepted_target, now)
+        except (TypeError, ValueError, RuntimeError) as exc:
+            self.get_logger().fatal(f"Failed to generate safe GELLO trajectory: {exc}")
+            rclpy.try_shutdown()
+            return
 
         gripper_joint_states = Float32()
         gripper_joint_states.data = self._gripper_command(gripper_position)
-        self.arm_joint_publisher.publish(arm_joint_states)
+        self.raw_arm_joint_publisher.publish(self._joint_state_message(accepted_target))
         self.gripper_joint_publisher.publish(gripper_joint_states)
+
+    def publish_interpolated_joint_reference(self) -> None:
+        """Publish the high-rate reference consumed by the impedance controller."""
+        if not self._joint_trajectory.initialized:
+            return
+        reference = self._joint_trajectory.sample(time.monotonic())
+        self.arm_reference_publisher.publish(self._joint_state_message(reference))
 
     def destroy_node(self) -> None:
         """Override the destroy_node method to disable torque mode before shutting down."""

@@ -7,6 +7,7 @@ lerobot_data_bridge:
     command_host: "127.0.0.1"
     command_port: 5556
     command_max_age_sec: 0.5
+    deployment_reference_rate_hz: 1000.0
     task_name: "pick and place"
     deployment_mode: true
     deployment_start_active: false
