@@ -5,6 +5,7 @@ from pathlib import Path
 import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
+from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import JointState
 from std_msgs.msg import Float32
@@ -141,6 +142,8 @@ class GelloPublisher(Node):
 
     def publish_raw_joint_target(self) -> None:
         """Read and publish the low-rate absolute GELLO waypoint."""
+        if not rclpy.ok():
+            return
         [gello_arm_joints, gripper_position] = self.gello_hardware.read_joint_states()
 
         now = time.monotonic()
@@ -193,15 +196,27 @@ class GelloPublisher(Node):
 
         gripper_joint_states = Float32()
         gripper_joint_states.data = self._gripper_command(gripper_position)
-        self.raw_arm_joint_publisher.publish(self._joint_state_message(accepted_target))
-        self.gripper_joint_publisher.publish(gripper_joint_states)
+        if not rclpy.ok():
+            return
+        try:
+            self.raw_arm_joint_publisher.publish(self._joint_state_message(accepted_target))
+            self.gripper_joint_publisher.publish(gripper_joint_states)
+        except _rclpy.RCLError:
+            # Another required node may have initiated ROS shutdown between
+            # the context check and publish().  Treat that as normal teardown.
+            if rclpy.ok():
+                raise
 
     def publish_interpolated_joint_reference(self) -> None:
         """Publish the high-rate reference consumed by the impedance controller."""
-        if not self._joint_trajectory.initialized:
+        if not rclpy.ok() or not self._joint_trajectory.initialized:
             return
         reference = self._joint_trajectory.sample(time.monotonic())
-        self.arm_reference_publisher.publish(self._joint_state_message(reference))
+        try:
+            self.arm_reference_publisher.publish(self._joint_state_message(reference))
+        except _rclpy.RCLError:
+            if rclpy.ok():
+                raise
 
     def destroy_node(self) -> None:
         """Override the destroy_node method to disable torque mode before shutting down."""
