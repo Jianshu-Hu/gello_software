@@ -1,7 +1,7 @@
 import os
 
 from launch import LaunchDescription
-from launch.actions import DeclareLaunchArgument, OpaqueFunction
+from launch.actions import DeclareLaunchArgument, OpaqueFunction, TimerAction
 from launch.substitutions import LaunchConfiguration
 from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
@@ -32,6 +32,7 @@ def generate_camera_nodes(context):
 
     parameters = _load_camera_parameters(config_file)
     nodes = []
+    enabled_camera_count = 0
     for camera_index in range(1, 4):
         if not bool(parameters.get(f"camera_{camera_index}_enabled", True)):
             continue
@@ -40,15 +41,18 @@ def generate_camera_nodes(context):
         node_parameters = dict(parameters)
         node_parameters.update(_single_camera_overrides(camera_index))
 
-        nodes.append(
-            Node(
-                package="franka_realsense_camera_publisher",
-                executable="realsense_camera_publisher",
-                name=f"realsense_camera_publisher_{camera_name}",
-                parameters=[node_parameters],
-                output="screen",
-            )
+        node = Node(
+            package="franka_realsense_camera_publisher",
+            executable="realsense_camera_publisher",
+            name=f"realsense_camera_publisher_{camera_name}",
+            parameters=[node_parameters],
+            output="screen",
         )
+        if enabled_camera_count == 0:
+            nodes.append(node)
+        else:
+            nodes.append(TimerAction(period=2.0 * enabled_camera_count, actions=[node]))
+        enabled_camera_count += 1
 
     return nodes
 

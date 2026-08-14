@@ -78,7 +78,21 @@ class RealSenseCameraPublisher(Node):
         if not requested_configs:
             raise ValueError("At least one camera must be enabled.")
 
-        available_serials = list_realsense_serials()
+        configured_serials = [
+            config["serial"] for config in requested_configs if config["serial"]
+        ]
+        if len(configured_serials) != len(set(configured_serials)):
+            raise ValueError(
+                "Each enabled RealSense camera must use a unique serial number."
+            )
+
+        # Explicit serials can be passed straight to librealsense. Avoid querying
+        # every USB device from multiple camera processes during parallel startup.
+        available_serials = (
+            configured_serials
+            if len(configured_serials) == len(requested_configs)
+            else list_realsense_serials()
+        )
         if len(available_serials) < len(requested_configs):
             raise RuntimeError(
                 f"Found {len(available_serials)} RealSense cameras but {len(requested_configs)} are enabled."
