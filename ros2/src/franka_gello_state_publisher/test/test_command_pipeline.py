@@ -33,25 +33,18 @@ class FakeGelloHardware:
         pass
 
 
-def test_raw_waypoint_and_interpolated_reference_topics(monkeypatch, tmp_path) -> None:
+def test_raw_waypoint_topic_is_low_rate(monkeypatch, tmp_path) -> None:
     monkeypatch.setattr(publisher_module, "GelloHardware", FakeGelloHardware)
     monkeypatch.setenv("ROS_LOG_DIR", str(tmp_path / "ros-logs"))
     rclpy.init()
     publisher = publisher_module.GelloPublisher()
     observer = Node("gello_pipeline_test_observer")
     raw_messages: list[JointState] = []
-    reference_messages: list[JointState] = []
     observer.create_subscription(
         JointState,
         "gello/raw_joint_states",
         raw_messages.append,
         100,
-    )
-    observer.create_subscription(
-        JointState,
-        "gello/joint_states",
-        reference_messages.append,
-        1000,
     )
     executor = SingleThreadedExecutor()
     executor.add_node(publisher)
@@ -68,11 +61,4 @@ def test_raw_waypoint_and_interpolated_reference_topics(monkeypatch, tmp_path) -
         rclpy.shutdown()
 
     assert 3 <= len(raw_messages) <= 7
-    assert len(reference_messages) >= 10 * len(raw_messages)
     assert raw_messages[-1].position[0] - raw_messages[0].position[0] > 0.19
-
-    reference_positions = np.asarray(
-        [message.position for message in reference_messages], dtype=np.float64
-    )
-    assert np.all(np.diff(reference_positions[:, 0]) >= -1e-8)
-    assert np.max(np.diff(reference_positions[:, 0])) < 0.02

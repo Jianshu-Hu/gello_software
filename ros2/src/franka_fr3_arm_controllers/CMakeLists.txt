@@ -37,13 +37,15 @@ find_package(franka_semantic_components REQUIRED)
 find_package(moveit_core REQUIRED)
 find_package(moveit_msgs REQUIRED)
 find_package(std_srvs REQUIRED)
+find_package(realtime_tools REQUIRED)
 
 add_library(
         ${PROJECT_NAME}
         SHARED
         src/joint_impedance_controller.cpp
         src/deployment_joint_impedance_controller.cpp
-        src/motion_generator.cpp)
+        src/configurable_joint_impedance_controller.cpp
+        src/joint_reference_generator.cpp)
 target_include_directories(
         ${PROJECT_NAME}
         PUBLIC
@@ -61,6 +63,7 @@ ament_target_dependencies(
         moveit_core
         moveit_msgs
         std_srvs
+        realtime_tools
 )
 
 pluginlib_export_plugin_description_file(
@@ -98,6 +101,7 @@ ament_export_dependencies(
         hardware_interface
         moveit_core
         std_srvs
+        realtime_tools
 )
 
 if(BUILD_TESTING)
@@ -124,6 +128,11 @@ ament_add_gtest(
 )
   if(TARGET test_joint_impedance_controller)
     target_link_libraries(test_joint_impedance_controller ${PROJECT_NAME})
+  endif()
+
+  ament_add_gtest(test_joint_reference_generator test/test_joint_reference_generator.cpp)
+  if(TARGET test_joint_reference_generator)
+    target_link_libraries(test_joint_reference_generator ${PROJECT_NAME})
   endif()
 endif()
 

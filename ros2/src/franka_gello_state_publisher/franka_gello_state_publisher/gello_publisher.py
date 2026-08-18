@@ -34,7 +34,6 @@ from utils.limit import (  # noqa: E402
     FR3_SAFE_POSITION_UPPER_RAD,
     SustainedViolationMonitor,
 )
-from utils.trajectory import QuinticJointTrajectory  # noqa: E402
 
 GRIPPER_COMMAND_MODE = "absolute_width"  # "absolute_width" or "binary_open_close"
 JOINT_NAMES = [f"fr3_joint{index}" for index in range(1, 8)]
@@ -46,13 +45,11 @@ class GelloPublisher(Node):
     def __init__(self) -> None:
         super().__init__("gello_publisher")
         self.declare_parameter("command_rate_hz", 15.0)
-        self.declare_parameter("reference_rate_hz", 1000.0)
         self.declare_parameter("gripper_binary_open_threshold", 0.6)
         self.declare_parameter("gripper_binary_close_threshold", 0.4)
         self.command_rate_hz = float(self.get_parameter("command_rate_hz").value)
-        self.reference_rate_hz = float(self.get_parameter("reference_rate_hz").value)
-        if self.command_rate_hz <= 0.0 or self.reference_rate_hz <= 0.0:
-            raise ValueError("GELLO command and reference rates must be positive.")
+        if self.command_rate_hz <= 0.0:
+            raise ValueError("GELLO command rate must be positive.")
         self.gripper_binary_open_threshold = float(
             self.get_parameter("gripper_binary_open_threshold").value
         )
@@ -60,7 +57,6 @@ class GelloPublisher(Node):
             self.get_parameter("gripper_binary_close_threshold").value
         )
         self._latched_gripper_command: float | None = None
-        self._joint_trajectory = QuinticJointTrajectory()
         self._unsafe_target_monitor = SustainedViolationMonitor(stop_after_s=1.0)
 
         hardware_params: GelloHardwareParams = self._setup_hardware_parameters()
@@ -74,9 +70,6 @@ class GelloPublisher(Node):
         self.raw_arm_joint_publisher = self.create_publisher(
             JointState, "gello/raw_joint_states", 10
         )
-        self.arm_reference_publisher = self.create_publisher(
-            JointState, "gello/joint_states", 10
-        )
         self.gripper_joint_publisher = self.create_publisher(
             Float32, "gripper/gripper_client/target_gripper_width_percent", 10
         )
@@ -87,14 +80,11 @@ class GelloPublisher(Node):
         )
 
         self.get_logger().info(
-            f"Publishing raw GELLO waypoints at {self.command_rate_hz:g} Hz and "
-            f"quintic controller references at {self.reference_rate_hz:g} Hz."
+            f"Publishing raw GELLO waypoints at {self.command_rate_hz:g} Hz; "
+            "the robot-side controller generates the 1 kHz reference."
         )
         self.command_timer = self.create_timer(
             1.0 / self.command_rate_hz, self.publish_raw_joint_target
-        )
-        self.reference_timer = self.create_timer(
-            1.0 / self.reference_rate_hz, self.publish_interpolated_joint_reference
         )
 
     def parameter_event_callback(self, event: ParameterEvent) -> None:
@@ -184,16 +174,6 @@ class GelloPublisher(Node):
         if accepted_target is None:
             return
 
-        try:
-            if not self._joint_trajectory.initialized:
-                self._joint_trajectory.reset(accepted_target, now)
-            else:
-                self._joint_trajectory.update_target(accepted_target, now)
-        except (TypeError, ValueError, RuntimeError) as exc:
-            self.get_logger().fatal(f"Failed to generate safe GELLO trajectory: {exc}")
-            rclpy.try_shutdown()
-            return
-
         gripper_joint_states = Float32()
         gripper_joint_states.data = self._gripper_command(gripper_position)
         if not rclpy.ok():
@@ -204,17 +184,6 @@ class GelloPublisher(Node):
         except _rclpy.RCLError:
             # Another required node may have initiated ROS shutdown between
             # the context check and publish().  Treat that as normal teardown.
-            if rclpy.ok():
-                raise
-
-    def publish_interpolated_joint_reference(self) -> None:
-        """Publish the high-rate reference consumed by the impedance controller."""
-        if not rclpy.ok() or not self._joint_trajectory.initialized:
-            return
-        reference = self._joint_trajectory.sample(time.monotonic())
-        try:
-            self.arm_reference_publisher.publish(self._joint_state_message(reference))
-        except _rclpy.RCLError:
             if rclpy.ok():
                 raise
 

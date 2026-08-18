@@ -309,11 +309,13 @@ The `config_file` argument is **optional**. If not provided, it defaults either 
 ## Packages Overview
 
 ### 1. `franka_fr3_arm_controllers`
-This package provides a Joint Impedance controller for the Franka FR3. It subscribes to the GELLO joint states and sends torque commands to the robot.
+This package provides a shared configurable Joint Impedance controller for the Franka FR3. It accepts low-rate absolute waypoints, generates the constrained reference locally at the 1 kHz controller rate, and sends torque commands to the robot.
 
 #### Key Features:
 - Implements a `JointImpedanceController` for controlling the robot's torques.
-- Subscribes to the 1 kHz quintic reference on `/gello/joint_states`.
+- Collection mode subscribes to `/gello/raw_joint_states`; deployment mode subscribes to `/deployment/joint_states`.
+- Both modes use the same robot-side stateful reference generator and impedance law.
+- The `/franka/commanded_joint_states` topic is a 100 Hz diagnostic stream; the 1 kHz reference is used internally.
 
 #### Launch Files:
 - **`franka.launch.py`**: Launches the Franka robot ros interfaces.
@@ -321,11 +323,11 @@ This package provides a Joint Impedance controller for the Franka FR3. It subscr
 
 ### 2. `franka_gello_state_publisher`
 This package provides a ROS 2 node that reads input from the GELLO and publishes
-low-rate absolute waypoints plus high-rate interpolated controller references.
+low-rate absolute waypoints. The robot-side controller owns interpolation.
 
 #### Key Features:
-- Publishes accepted absolute GELLO waypoints to `/gello/raw_joint_states` at 15 Hz.
-- Publishes quintic controller references to `/gello/joint_states` at 1 kHz.
+- Publishes absolute GELLO waypoints to `/gello/raw_joint_states` at 15 Hz.
+- The controller echoes validated waypoints on `/gello/accepted_joint_states` for recording.
 - Optionally sets the internal control parameters of the Dynamixel motors. This allows for [virtual springs and dampers](#virtual-springs-dampers) in the GELLO joints.
 
 #### Launch Files:

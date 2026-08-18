@@ -25,7 +25,7 @@
 class MockGelloJointStatePublisher : public rclcpp::Node {
  public:
   MockGelloJointStatePublisher() : Node("joint_state_publisher_node") {
-    publisher_ = this->create_publisher<sensor_msgs::msg::JointState>("/gello/joint_states", 3);
+    publisher_ = this->create_publisher<sensor_msgs::msg::JointState>("/gello/raw_joint_states", 3);
     timer_ =
         this->create_wall_timer(std::chrono::milliseconds(100),
                                 std::bind(&MockGelloJointStatePublisher::publishJointState_, this));

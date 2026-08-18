@@ -4,14 +4,13 @@ lerobot_data_bridge:
     max_data_age_sec: 0.5
     publish_host: "127.0.0.1"
     publish_port: 5555
-    deployment_reference_rate_hz: 1000.0
     task_name: "franka_gello_single_arm_teleop"
     include_gripper: true
     include_right_arm: false
     arm_action_source: "topic"
 
     left_robot_joint_state_topic: "/left/joint_states"
-    left_arm_action_topic: "/left/gello/raw_joint_states"
+    left_arm_action_topic: "/left/gello/accepted_joint_states"
     left_robot_gripper_state_topic: "/left/franka_gripper/joint_states"
     left_gripper_action_topic: "/left/gripper/gripper_client/target_gripper_width_percent"
 

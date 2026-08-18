@@ -1,4 +1,4 @@
-// Copyright (c) 2025 Franka Robotics GmbH
+// Copyright (c) 2026 Franka Robotics GmbH
 //
 // Licensed under the Apache License, Version 2.0 (the "License");
 // you may not use this file except in compliance with the License.
@@ -14,68 +14,15 @@
 
 #pragma once
 
-#include <array>
-#include <Eigen/Eigen>
-#include <controller_interface/controller_interface.hpp>
-#include <rclcpp/rclcpp.hpp>
-#include <sensor_msgs/msg/joint_state.hpp>
-#include <string>
-#include "franka_fr3_arm_controllers/motion_generator.hpp"
-
-using CallbackReturn = rclcpp_lifecycle::node_interfaces::LifecycleNodeInterface::CallbackReturn;
+#include "franka_fr3_arm_controllers/configurable_joint_impedance_controller.hpp"
 
 namespace franka_fr3_arm_controllers {
 
-/**
- * Controller to move the robot to a desired joint position.
- */
-class JointImpedanceController : public controller_interface::ControllerInterface {
- public:
-  using Vector7d = Eigen::Matrix<double, 7, 1>;
-  [[nodiscard]] controller_interface::InterfaceConfiguration command_interface_configuration()
-      const override;
-  [[nodiscard]] controller_interface::InterfaceConfiguration state_interface_configuration()
-      const override;
-  controller_interface::return_type update(const rclcpp::Time& time,
-                                           const rclcpp::Duration& period) override;
-  CallbackReturn on_init() override;
-  CallbackReturn on_configure(const rclcpp_lifecycle::State& previous_state) override;
-  CallbackReturn on_activate(const rclcpp_lifecycle::State& previous_state) override;
-  CallbackReturn on_deactivate(const rclcpp_lifecycle::State& previous_state) override;
-
- private:
-  std::string arm_id_;
-  std::string namespace_prefix_;
-  const int num_joints = 7;
-  Vector7d q_;
-  Vector7d dq_;
-  Vector7d dq_filtered_;
-  Vector7d k_gains_;
-  Vector7d d_gains_;
-  Vector7d hold_position_;
-  double k_alpha_;
-  bool move_to_start_position_finished_{false};
-  bool motion_generator_initialized_{false};
-  bool hold_position_initialized_{false};
-  rclcpp::Time start_time_;
-  rclcpp::Time command_accept_time_;
-  std::unique_ptr<MotionGenerator> motion_generator_;
-  rclcpp::Subscription<sensor_msgs::msg::JointState>::SharedPtr joint_state_subscriber_ = nullptr;
-  rclcpp::Publisher<sensor_msgs::msg::JointState>::SharedPtr commanded_joint_state_publisher_ =
-      nullptr;
-  bool gello_position_values_valid_ = false;
-  std::array<double, 7> gello_position_values_{0, 0, 0, 0, 0, 0, 0};
-  rclcpp::Time last_joint_state_time_;
-  std::array<std::string, 7> joint_names_;
-
-  Vector7d calculateTauDGains_(const Vector7d& q_goal);
-  bool validateGains_(const std::vector<double>& gains, const std::string& gains_name);
-  bool initializeMotionGenerator_();
-  void publishCommandedJointState_(const Vector7d& q_goal);
-  void updateJointStates_();
-  void validateGelloPositions_(const sensor_msgs::msg::JointState& msg);
-  void resetCommandTracking_(const rclcpp::Time& reference_time);
-  void jointStateCallback_(const sensor_msgs::msg::JointState msg);
+class JointImpedanceController : public ConfigurableJointImpedanceController {
+ protected:
+  std::string defaultCommandTopic() const override { return "gello/raw_joint_states"; }
+  std::string defaultAcceptedTargetTopic() const override { return "gello/accepted_joint_states"; }
+  std::string defaultActivationMode() const override { return "always"; }
 };
 
 }  // namespace franka_fr3_arm_controllers

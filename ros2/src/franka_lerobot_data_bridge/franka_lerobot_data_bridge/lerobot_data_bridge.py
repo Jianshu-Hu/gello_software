@@ -29,7 +29,6 @@ def _add_repository_root_to_path() -> None:
 
 _add_repository_root_to_path()
 
-from utils.trajectory import QuinticJointTrajectory  # noqa: E402
 
 try:
     import pylibfranka
@@ -240,17 +239,10 @@ class LeRobotDataBridge(Node):
         self._deployment_controller_transition_futures: list[tuple[str, Any, Any]] = []
         self._deployment_arm_controller_available: dict[str, bool] = {"left": True, "right": True}
         self._deployment_joint_command_publishers: dict[str, Any] = {}
-        self._deployment_reference_rate_hz = float(
-            self.get_parameter("deployment_reference_rate_hz").value
-        )
         self._deployment_gripper_command_publishers: dict[str, Any] = {}
         self._deployment_enable_clients: dict[str, Any] = {}
         self._deployment_switch_clients: dict[str, Any] = {}
         self._last_published_gripper_command: dict[str, float | None] = {"left": None, "right": None}
-        self._deployment_joint_trajectories = {
-            "left": QuinticJointTrajectory(),
-            "right": QuinticJointTrajectory(),
-        }
         self._activation_service = None
 
         if self.deployment_mode:
@@ -281,11 +273,6 @@ class LeRobotDataBridge(Node):
             )
 
         self.timer = self.create_timer(1.0 / self.sample_rate_hz, self._publish_sample)
-        if self.deployment_mode:
-            self.deployment_reference_timer = self.create_timer(
-                1.0 / self._deployment_reference_rate_hz,
-                self._publish_high_rate_deployment_commands,
-            )
         self.get_logger().info(
             f"Publishing LeRobot samples over ZMQ on tcp://{self.publish_host}:{self.publish_port}"
         )
@@ -309,7 +296,6 @@ class LeRobotDataBridge(Node):
         self.declare_parameter("command_host", "127.0.0.1")
         self.declare_parameter("command_port", 5556)
         self.declare_parameter("command_max_age_sec", 0.5)
-        self.declare_parameter("deployment_reference_rate_hz", 1000.0)
         self.declare_parameter("task_name", "franka_gello_teleop")
         self.declare_parameter("deployment_mode", False)
         self.declare_parameter("deployment_start_active", True)
@@ -326,7 +312,7 @@ class LeRobotDataBridge(Node):
         self.declare_parameter("arm_action_source", "topic")
 
         self.declare_parameter("left_robot_joint_state_topic", "/left/franka/joint_states")
-        self.declare_parameter("left_arm_action_topic", "/left/franka/commanded_joint_states")
+        self.declare_parameter("left_arm_action_topic", "/left/gello/accepted_joint_states")
         self.declare_parameter(
             "left_robot_gripper_state_topic", "/left/franka_gripper/joint_states"
         )
@@ -347,7 +333,7 @@ class LeRobotDataBridge(Node):
         )
 
         self.declare_parameter("right_robot_joint_state_topic", "/right/franka/joint_states")
-        self.declare_parameter("right_arm_action_topic", "/right/franka/commanded_joint_states")
+        self.declare_parameter("right_arm_action_topic", "/right/gello/accepted_joint_states")
         self.declare_parameter(
             "right_robot_gripper_state_topic", "/right/franka_gripper/joint_states"
         )
@@ -804,7 +790,6 @@ class LeRobotDataBridge(Node):
                 if not self._deployment_command_active and self._command_has_payload(command):
                     self._set_deployment_controller_enabled(True)
                     if self._deployment_controller_enabled:
-                        self._reset_deployment_trajectories()
                         self._deployment_command_active = True
                         self.get_logger().info(
                             "Received first deployment command packet; enabling ROS2 command publishing."
@@ -869,7 +854,6 @@ class LeRobotDataBridge(Node):
             self._deployment_command_active = False
             self._latest_deployment_command = None
             self._latest_deployment_command_stamp_s = 0.0
-            self._reset_deployment_trajectories()
             self._set_deployment_controller_enabled(False)
             self.get_logger().info(
                 "Deployment bridge switched to STANDBY mode. Publishing hold commands only."
@@ -887,59 +871,6 @@ class LeRobotDataBridge(Node):
             self._latest_deployment_command is not None
             and (self._now_s() - self._latest_deployment_command_stamp_s) <= self.command_max_age_sec
         )
-
-    def _reset_deployment_trajectories(self) -> None:
-        now_s = self._now_s()
-        for arm_name, trajectory in self._deployment_joint_trajectories.items():
-            sample = self.latest_robot_arm_samples[arm_name]
-            if sample is not None:
-                trajectory.reset(sample.values, now_s)
-
-    def _update_deployment_trajectory_targets(self) -> None:
-        now_s = self._now_s()
-        for arm_name in self._required_arms():
-            sample = self.latest_robot_arm_samples[arm_name]
-            trajectory = self._deployment_joint_trajectories[arm_name]
-            if sample is None:
-                continue
-            if not self._command_is_fresh():
-                trajectory.reset(sample.values, now_s)
-                continue
-            target = (self._latest_deployment_command or {}).get(
-                f"{arm_name}_joint_target"
-            )
-            if not isinstance(target, list) or not target:
-                trajectory.reset(sample.values, now_s)
-                continue
-            try:
-                trajectory.update_target(target, now_s)
-            except (TypeError, ValueError, RuntimeError) as exc:
-                self._log_deployment_warning(
-                    f"{arm_name}_invalid_joint_target",
-                    f"Rejecting invalid {arm_name} deployment joint target: {exc}",
-                )
-                trajectory.reset(sample.values, now_s)
-
-    def _publish_high_rate_deployment_commands(self) -> None:
-        if not self.deployment_mode:
-            return
-        now_s = self._now_s()
-        for arm_name in self._required_arms():
-            if not self._deployment_arm_controller_available.get(arm_name, True):
-                continue
-            sample = self.latest_robot_arm_samples[arm_name]
-            publisher = self._deployment_joint_command_publishers.get(arm_name)
-            trajectory = self._deployment_joint_trajectories[arm_name]
-            if sample is None or publisher is None:
-                continue
-            if not self._deployment_active or not self._deployment_command_active:
-                publisher.publish(self._joint_state_message(arm_name, list(sample.values)))
-                continue
-            if not trajectory.initialized:
-                trajectory.reset(sample.values, now_s)
-            publisher.publish(
-                self._joint_state_message(arm_name, trajectory.sample(now_s).tolist())
-            )
 
     def _arm_state_is_stable_for_hold(self, arm_name: str) -> bool:
         sample = self.latest_robot_arm_samples[arm_name]
@@ -1030,7 +961,6 @@ class LeRobotDataBridge(Node):
             ):
                 self._set_deployment_controller_enabled(True)
                 if self._deployment_controller_enabled:
-                    self._reset_deployment_trajectories()
                     self._deployment_command_active = True
                     self.get_logger().info(
                         "Deployment controller is ready; switching from hold to command publishing."
@@ -1040,12 +970,27 @@ class LeRobotDataBridge(Node):
             self._publish_hold_joint_commands()
             return
 
-        self._update_deployment_trajectory_targets()
-
-        if not self.include_gripper or not self._command_is_fresh():
+        if not self._command_is_fresh():
+            self._publish_hold_joint_commands()
             return
 
+        # Only one absolute waypoint per 15 Hz bridge cycle crosses the
+        # network. The robot-side controller generates its own 1 kHz reference.
         command = self._latest_deployment_command or {}
+        for arm_name in self._required_arms():
+            if not self._deployment_arm_controller_available.get(arm_name, True):
+                continue
+            target = command.get(f"{arm_name}_joint_target")
+            publisher = self._deployment_joint_command_publishers.get(arm_name)
+            if publisher is None or not isinstance(target, list) or len(target) != 7:
+                continue
+            publisher.publish(
+                self._joint_state_message(arm_name, [float(value) for value in target])
+            )
+
+        if not self.include_gripper:
+            return
+
         for arm_name in self._required_arms():
             if not self._deployment_arm_controller_available.get(arm_name, True):
                 continue

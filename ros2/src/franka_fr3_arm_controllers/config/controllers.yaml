@@ -22,6 +22,10 @@
   joint_impedance_controller:
     ros__parameters:
       k_alpha: 0.99
+      command_topic: gello/raw_joint_states
+      accepted_target_topic: gello/accepted_joint_states
+      activation_mode: always
+      command_timeout_sec: 0.5
       k_gains:
         - 240.0
         - 240.0
@@ -44,6 +48,9 @@
     ros__parameters:
       k_alpha: 0.99
       command_timeout_sec: 0.5
+      command_topic: deployment/joint_states
+      accepted_target_topic: deployment/accepted_joint_states
+      activation_mode: service
       k_gains:
         - 240.0
         - 240.0

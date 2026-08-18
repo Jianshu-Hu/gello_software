@@ -29,8 +29,8 @@ TEST_F(JointImpedanceControllerTest, TestActivate) {
   EXPECT_EQ(startController(), CallbackReturn::SUCCESS);
 }
 
-TEST_F(JointImpedanceControllerTest, TestUpdateMotionGeneratorOnly) {
-  static const std::vector<double> kInitialRobotPosition = {0.1, 0.1, 0.1, 0.1, 0.1, 0.1, 0.1};
+TEST_F(JointImpedanceControllerTest, TestUpdateReferenceGeneratorOnly) {
+  static const std::vector<double> kInitialRobotPosition = {0.1, 0.1, 0.1, -0.3, 0.1, 1.0, 0.1};
   static constexpr double kExpectedValue = -0.05;
   static constexpr double kTolerance = 0.01;
 
@@ -48,8 +48,8 @@ TEST_F(JointImpedanceControllerTest, TestUpdateMotionGeneratorOnly) {
   }
 }
 
-TEST_F(JointImpedanceControllerTest, TestUpdateMotionGeneratorAndGelloPositionValues) {
-  static const std::vector<double> kInitialRobotPosition = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+TEST_F(JointImpedanceControllerTest, TestUpdateReferenceGeneratorAndGelloPositionValues) {
+  static const std::vector<double> kInitialRobotPosition = {1.0, 1.0, 1.0, -0.3, 1.0, 1.0, 1.0};
   static constexpr double kExpectedValue = -0.05;
   static constexpr double kTolerance = 0.01;
 
@@ -68,7 +68,7 @@ TEST_F(JointImpedanceControllerTest, TestUpdateMotionGeneratorAndGelloPositionVa
 }
 
 TEST_F(JointImpedanceControllerTest, TestUpdateGelloPositionValuesOnly) {
-  static const std::vector<double> kInitialRobotPosition = {1.0, 1.0, 1.0, 1.0, 1.0, 1.0, 1.0};
+  static const std::vector<double> kInitialRobotPosition = {1.0, 1.0, 1.0, -0.3, 1.0, 1.0, 1.0};
   static constexpr double kExpectedValue = -0.075;
   static constexpr double kTolerance = 0.01;
 

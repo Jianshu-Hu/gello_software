@@ -20,7 +20,6 @@ def generate_robot_nodes(context):
     config_file = os.path.join(package_config_dir, "config", config_file_name)
     configs = load_yaml(config_file)
     command_rate_hz = float(LaunchConfiguration("command_rate_hz").perform(context))
-    reference_rate_hz = float(LaunchConfiguration("reference_rate_hz").perform(context))
     nodes = []
     for item_name, config in configs.items():
         namespace = config["namespace"]
@@ -36,7 +35,6 @@ def generate_robot_nodes(context):
                     {"com_port": config["com_port"]},
                     {"gello_name": item_name},
                     {"command_rate_hz": command_rate_hz},
-                    {"reference_rate_hz": reference_rate_hz},
                     {"num_arm_joints": config["num_arm_joints"]},
                     {"joint_signs": config["joint_signs"]},
                     {"gripper": config["gripper"]},
@@ -65,11 +63,6 @@ def generate_launch_description():
                 "command_rate_hz",
                 default_value="15.0",
                 description="Raw GELLO absolute-waypoint publication rate.",
-            ),
-            DeclareLaunchArgument(
-                "reference_rate_hz",
-                default_value="1000.0",
-                description="Quintic controller-reference publication rate.",
             ),
             OpaqueFunction(function=generate_robot_nodes),
         ]
