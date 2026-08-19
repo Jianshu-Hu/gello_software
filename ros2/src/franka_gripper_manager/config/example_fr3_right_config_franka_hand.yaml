@@ -1,0 +1,3 @@
+# Right-only counterpart to example_fr3_config_franka_hand.yaml.
+RIGHT:
+  namespace: "right"

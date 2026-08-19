@@ -1,0 +1,13 @@
+# Right FR3 arm without the Franka gripper hardware node (for Wuji/no-gripper use).
+RIGHT:
+  arm_id: "fr3"
+  arm_prefix: "right"
+  fake_sensor_commands: "false"
+  joint_sources: ["joint_states"]
+  joint_state_rate: 30
+  load_gripper: "false"
+  namespace: "right"
+  robot_ip: "172.16.0.2"
+  urdf_file: "fr3/fr3.urdf.xacro"
+  use_fake_hardware: "false"
+  use_rviz: "false"
