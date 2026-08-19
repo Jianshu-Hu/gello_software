@@ -86,6 +86,13 @@ class JointSample:
 
 
 @dataclass
+class HandSample:
+    current: list[float]
+    target: list[float]
+    stamp_s: float
+
+
+@dataclass
 class ImageSample:
     image: np.ndarray
     stamp_s: float
@@ -133,6 +140,7 @@ class LeRobotDataBridge(Node):
         self.camera_max_age_sec = float(self.get_parameter("camera_max_age_sec").value)
         self.robot_state_max_age_sec = float(self.get_parameter("robot_state_max_age_sec").value)
         self.gripper_state_max_age_sec = float(self.get_parameter("gripper_state_max_age_sec").value)
+        self.hand_data_max_age_sec = float(self.get_parameter("hand_data_max_age_sec").value)
         self.max_camera_skew_sec = float(self.get_parameter("max_camera_skew_sec").value)
         self.publish_host = str(self.get_parameter("publish_host").value)
         self.publish_port = int(self.get_parameter("publish_port").value)
@@ -158,7 +166,28 @@ class LeRobotDataBridge(Node):
         self.right_robot_ip = str(self.get_parameter("right_robot_ip").value)
 
         self.include_gripper = bool(self.get_parameter("include_gripper").value)
+        self.include_hand = bool(self.get_parameter("include_hand").value)
+        self.hand_telemetry_host = str(self.get_parameter("hand_telemetry_host").value)
+        self.hand_telemetry_port = int(self.get_parameter("hand_telemetry_port").value)
+        if self.include_hand and self.include_gripper:
+            raise ValueError("include_hand and include_gripper are mutually exclusive")
         self.include_right_arm = bool(self.get_parameter("include_right_arm").value)
+        configured_arm_mode = str(self.get_parameter("arm_mode").value).strip().lower()
+        if configured_arm_mode == "single":
+            configured_arm_mode = "left"
+        if not configured_arm_mode:
+            configured_arm_mode = "duo" if self.include_right_arm else "left"
+        if configured_arm_mode not in {"duo", "left", "right"}:
+            raise ValueError(
+                "arm_mode must be one of 'duo', 'left', or 'right'; "
+                f"got {configured_arm_mode!r}"
+            )
+        if (configured_arm_mode == "duo") != self.include_right_arm:
+            raise ValueError(
+                f"arm_mode={configured_arm_mode!r} is inconsistent with "
+                f"include_right_arm={self.include_right_arm}"
+            )
+        self.arm_mode = configured_arm_mode
         self.require_gripper_freshness = bool(
             self.get_parameter("require_gripper_freshness").value
         )
@@ -218,6 +247,7 @@ class LeRobotDataBridge(Node):
         self.latest_arm_action_samples: dict[str, JointSample | None] = {"left": None, "right": None}
         self.latest_robot_gripper_samples: dict[str, JointSample | None] = {"left": None, "right": None}
         self.latest_gripper_action_samples: dict[str, JointSample | None] = {"left": None, "right": None}
+        self.latest_hand_samples: dict[str, HandSample | None] = {"left": None, "right": None}
         self.last_published_arm_action_samples: dict[str, JointSample | None] = {
             "left": None,
             "right": None,
@@ -236,6 +266,13 @@ class LeRobotDataBridge(Node):
         self._socket = self._zmq_context.socket(zmq.PUB)
         self._socket.setsockopt(zmq.SNDHWM, 1)
         self._socket.bind(f"tcp://{self.publish_host}:{self.publish_port}")
+        self._hand_telemetry_socket = None
+        if self.include_hand:
+            self._hand_telemetry_socket = self._zmq_context.socket(zmq.PULL)
+            self._hand_telemetry_socket.setsockopt(zmq.RCVHWM, 2)
+            self._hand_telemetry_socket.bind(
+                f"tcp://{self.hand_telemetry_host}:{self.hand_telemetry_port}"
+            )
         self._camera_cache_socket = self._zmq_context.socket(zmq.PUB)
         self._camera_cache_socket.setsockopt(zmq.SNDHWM, 2)
         self._camera_cache_socket.bind(f"tcp://{self.camera_cache_host}:{self.camera_cache_port}")
@@ -307,6 +344,7 @@ class LeRobotDataBridge(Node):
         self.declare_parameter("camera_max_age_sec", 0.25)
         self.declare_parameter("robot_state_max_age_sec", 0.25)
         self.declare_parameter("gripper_state_max_age_sec", 0.25)
+        self.declare_parameter("hand_data_max_age_sec", 0.5)
         self.declare_parameter("max_camera_skew_sec", 0.067)
         self.declare_parameter("publish_host", "127.0.0.1")
         self.declare_parameter("publish_port", 5555)
@@ -326,7 +364,11 @@ class LeRobotDataBridge(Node):
         self.declare_parameter("right_robot_ip", "172.16.0.2")
 
         self.declare_parameter("include_gripper", True)
+        self.declare_parameter("include_hand", False)
+        self.declare_parameter("hand_telemetry_host", "0.0.0.0")
+        self.declare_parameter("hand_telemetry_port", 5558)
         self.declare_parameter("include_right_arm", True)
+        self.declare_parameter("arm_mode", "")
         self.declare_parameter("require_gripper_freshness", False)
         self.declare_parameter("arm_action_source", "topic")
 
@@ -378,60 +420,45 @@ class LeRobotDataBridge(Node):
             self.declare_parameter(f"camera_{idx}_topic", f"/cameras/{default_name}/image_raw")
 
     def _create_live_state_subscriptions(self) -> None:
-        self.create_subscription(
-            JointState,
-            self.left_robot_joint_state_topic,
-            lambda msg: self._store_joint_sample(self.latest_robot_arm_samples, "left", msg),
-            10,
-        )
-        if self.arm_action_source in {"topic", "topic_delta"}:
+        for arm_name in self._required_arms():
+            if arm_name == "left":
+                robot_topic = self.left_robot_joint_state_topic
+                action_topic = self.left_arm_action_topic
+                gripper_state_topic = self.left_robot_gripper_state_topic
+                gripper_action_topic = self.left_gripper_action_topic
+            else:
+                robot_topic = self.right_robot_joint_state_topic
+                action_topic = self.right_arm_action_topic
+                gripper_state_topic = self.right_robot_gripper_state_topic
+                gripper_action_topic = self.right_gripper_action_topic
             self.create_subscription(
                 JointState,
-                self.left_arm_action_topic,
-                lambda msg: self._store_joint_sample(self.latest_arm_action_samples, "left", msg),
-                10,
-            )
-
-        if self.include_gripper:
-            self.create_subscription(
-                JointState,
-                self.left_robot_gripper_state_topic,
-                lambda msg: self._store_robot_gripper_sample("left", msg),
-                10,
-            )
-            self.create_subscription(
-                Float32,
-                self.left_gripper_action_topic,
-                lambda msg: self._store_gripper_action_sample("left", msg),
-                10,
-            )
-
-        if self.include_right_arm:
-            self.create_subscription(
-                JointState,
-                self.right_robot_joint_state_topic,
-                lambda msg: self._store_joint_sample(self.latest_robot_arm_samples, "right", msg),
+                robot_topic,
+                lambda msg, side=arm_name: self._store_joint_sample(
+                    self.latest_robot_arm_samples, side, msg
+                ),
                 10,
             )
             if self.arm_action_source in {"topic", "topic_delta"}:
                 self.create_subscription(
                     JointState,
-                    self.right_arm_action_topic,
-                    lambda msg: self._store_joint_sample(self.latest_arm_action_samples, "right", msg),
+                    action_topic,
+                    lambda msg, side=arm_name: self._store_joint_sample(
+                        self.latest_arm_action_samples, side, msg
+                    ),
                     10,
                 )
-
             if self.include_gripper:
                 self.create_subscription(
                     JointState,
-                    self.right_robot_gripper_state_topic,
-                    lambda msg: self._store_robot_gripper_sample("right", msg),
+                    gripper_state_topic,
+                    lambda msg, side=arm_name: self._store_robot_gripper_sample(side, msg),
                     10,
                 )
                 self.create_subscription(
                     Float32,
-                    self.right_gripper_action_topic,
-                    lambda msg: self._store_gripper_action_sample("right", msg),
+                    gripper_action_topic,
+                    lambda msg, side=arm_name: self._store_gripper_action_sample(side, msg),
                     10,
                 )
 
@@ -658,7 +685,9 @@ class LeRobotDataBridge(Node):
         self._deployment_controller_transition_phase = None
 
     def _required_arms(self) -> list[str]:
-        return ["left", "right"] if self.include_right_arm else ["left"]
+        if self.arm_mode == "duo":
+            return ["left", "right"]
+        return [self.arm_mode]
 
     def _now_s(self) -> float:
         return self.get_clock().now().nanoseconds * 1e-9
@@ -740,6 +769,36 @@ class LeRobotDataBridge(Node):
             values=[float(sum(msg.position))],
             stamp_s=_stamp_to_float_seconds(msg.header.stamp.sec, msg.header.stamp.nanosec),
         )
+
+    def _drain_hand_telemetry(self) -> None:
+        if self._hand_telemetry_socket is None:
+            return
+        while True:
+            try:
+                payload = self._hand_telemetry_socket.recv_pyobj(flags=zmq.NOBLOCK)
+            except zmq.Again:
+                return
+            if not isinstance(payload, dict):
+                continue
+            side = str(payload.get("side", "")).lower()
+            current = payload.get("current")
+            target = payload.get("target")
+            if side not in self.latest_hand_samples or not isinstance(current, list) or not isinstance(target, list):
+                continue
+            if len(current) != 20 or len(target) != 20:
+                self.get_logger().warning("Ignoring hand telemetry with non-20-joint payload")
+                continue
+            try:
+                stamp_s = float(payload["stamp_s"])
+                current_values = [float(value) for value in current]
+                target_values = [float(value) for value in target]
+            except (KeyError, TypeError, ValueError):
+                continue
+            self.latest_hand_samples[side] = HandSample(
+                current=current_values,
+                target=target_values,
+                stamp_s=stamp_s,
+            )
 
     def _on_camera_image(self, camera_index: int, msg: Image) -> None:
         try:
@@ -1114,6 +1173,7 @@ class LeRobotDataBridge(Node):
         return GRIPPER_ACTION_REPRESENTATION
 
     def _sample_is_ready(self) -> tuple[bool, str]:
+        self._drain_hand_telemetry()
         for arm_name in self._required_arms():
             if self.latest_robot_arm_samples[arm_name] is None:
                 return False, f"waiting for {arm_name} robot joint states"
@@ -1121,6 +1181,8 @@ class LeRobotDataBridge(Node):
                 return False, f"waiting for {arm_name} action joint states"
             if self.include_gripper and self.latest_robot_gripper_samples[arm_name] is None:
                 return False, f"waiting for {arm_name} robot gripper states"
+            if self.include_hand and self.latest_hand_samples[arm_name] is None:
+                return False, f"waiting for {arm_name} hand telemetry"
             if (
                 self.include_gripper
                 and not self.deployment_mode
@@ -1162,6 +1224,10 @@ class LeRobotDataBridge(Node):
                     )
                 ):
                     stale_sources.append(f"{arm_name} gripper action")
+            if self.include_hand and (
+                reference_time_s - self.latest_hand_samples[arm_name].stamp_s > self.hand_data_max_age_sec
+            ):
+                stale_sources.append(f"{arm_name} hand telemetry")
 
         camera_stamps = []
         for camera_name, sample in zip(self.camera_names, self.latest_camera_samples, strict=True):
@@ -1214,6 +1280,9 @@ class LeRobotDataBridge(Node):
                     action.append(self.deployment_gripper_action_value)
                 else:
                     action.extend(self.latest_gripper_action_samples[arm_name].values)
+            if self.include_hand:
+                robot_state.extend(self.latest_hand_samples[arm_name].current)
+                action.extend(self.latest_hand_samples[arm_name].target)
 
         bundle_signature = tuple(
             sample.sequence for sample in self.latest_camera_samples if sample is not None
@@ -1287,6 +1356,19 @@ class LeRobotDataBridge(Node):
                     for arm_name in self._required_arms()
                 }
             )
+        if self.include_hand:
+            state_freshness.update(
+                {
+                    f"{arm_name}_hand": {
+                        "stamp_s": self.latest_hand_samples[arm_name].stamp_s,
+                        "age_s": max(
+                            0.0,
+                            bridge_publish_s - self.latest_hand_samples[arm_name].stamp_s,
+                        ),
+                    }
+                    for arm_name in self._required_arms()
+                }
+            )
         oldest_robot_state_stamp_s = min(
             item["stamp_s"] for item in state_freshness.values()
         )
@@ -1303,7 +1385,9 @@ class LeRobotDataBridge(Node):
             "robot_state_dim": len(robot_state),
             "action_dim": len(action),
             "include_right_arm": self.include_right_arm,
+            "arm_mode": self.arm_mode,
             "include_gripper": self.include_gripper,
+            "include_hand": self.include_hand,
             "camera_freshness": camera_freshness,
             "camera_sync": camera_sync,
             "camera_bundle_sequence": self._camera_bundle_sequence,
@@ -1340,6 +1424,8 @@ class LeRobotDataBridge(Node):
         self._publish_deployment_hold_commands_on_shutdown()
         if self._command_socket is not None:
             self._command_socket.close(0)
+        if self._hand_telemetry_socket is not None:
+            self._hand_telemetry_socket.close(0)
         self._camera_cache_socket.close(0)
         self._socket.close(0)
         self._zmq_context.term()
