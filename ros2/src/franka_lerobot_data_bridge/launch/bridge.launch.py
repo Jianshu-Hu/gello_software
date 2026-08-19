@@ -31,6 +31,8 @@ def generate_bridge_node(context):
     publish_port = int(LaunchConfiguration("publish_port").perform(context))
     command_host = LaunchConfiguration("command_host").perform(context)
     command_port = int(LaunchConfiguration("command_port").perform(context))
+    camera_cache_host = LaunchConfiguration("camera_cache_host").perform(context)
+    camera_cache_port = int(LaunchConfiguration("camera_cache_port").perform(context))
     include_gripper_text = LaunchConfiguration("include_gripper").perform(context).strip().lower()
     overrides = {}
     if publish_host:
@@ -41,6 +43,10 @@ def generate_bridge_node(context):
         overrides["command_host"] = command_host
     if command_port > 0:
         overrides["command_port"] = command_port
+    if camera_cache_host:
+        overrides["camera_cache_host"] = camera_cache_host
+    if camera_cache_port > 0:
+        overrides["camera_cache_port"] = camera_cache_port
     if include_gripper_text in {"true", "false"}:
         overrides["include_gripper"] = include_gripper_text == "true"
 
@@ -82,6 +88,16 @@ def generate_launch_description():
                 "command_port",
                 default_value="0",
                 description="Override the deployment command ZMQ port; zero keeps YAML value.",
+            ),
+            DeclareLaunchArgument(
+                "camera_cache_host",
+                default_value="",
+                description="Override loopback camera-cache ZMQ bind address; empty keeps YAML value.",
+            ),
+            DeclareLaunchArgument(
+                "camera_cache_port",
+                default_value="0",
+                description="Override loopback camera-cache ZMQ port; zero keeps YAML value.",
             ),
             DeclareLaunchArgument(
                 "include_gripper",

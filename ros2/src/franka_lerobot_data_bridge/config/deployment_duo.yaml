@@ -1,12 +1,18 @@
 lerobot_data_bridge:
   ros__parameters:
     sample_rate_hz: 15.0
-    max_data_age_sec: 1.0
+    max_data_age_sec: 0.25
+    camera_max_age_sec: 0.25
+    robot_state_max_age_sec: 0.25
+    gripper_state_max_age_sec: 0.25
+    max_camera_skew_sec: 0.067
     publish_host: "127.0.0.1"
     publish_port: 5555
     command_host: "127.0.0.1"
     command_port: 5556
     command_max_age_sec: 0.5
+    camera_cache_host: "127.0.0.1"
+    camera_cache_port: 5557
     task_name: "pick and place"
     deployment_mode: true
     deployment_start_active: false

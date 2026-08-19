@@ -91,6 +91,7 @@ class ImageSample:
     stamp_s: float
     height: int
     width: int
+    sequence: int
 
 
 class LeRobotDataBridge(Node):
@@ -129,11 +130,17 @@ class LeRobotDataBridge(Node):
 
         self.sample_rate_hz = float(self.get_parameter("sample_rate_hz").value)
         self.max_data_age_sec = float(self.get_parameter("max_data_age_sec").value)
+        self.camera_max_age_sec = float(self.get_parameter("camera_max_age_sec").value)
+        self.robot_state_max_age_sec = float(self.get_parameter("robot_state_max_age_sec").value)
+        self.gripper_state_max_age_sec = float(self.get_parameter("gripper_state_max_age_sec").value)
+        self.max_camera_skew_sec = float(self.get_parameter("max_camera_skew_sec").value)
         self.publish_host = str(self.get_parameter("publish_host").value)
         self.publish_port = int(self.get_parameter("publish_port").value)
         self.command_host = str(self.get_parameter("command_host").value)
         self.command_port = int(self.get_parameter("command_port").value)
         self.command_max_age_sec = float(self.get_parameter("command_max_age_sec").value)
+        self.camera_cache_host = str(self.get_parameter("camera_cache_host").value)
+        self.camera_cache_port = int(self.get_parameter("camera_cache_port").value)
         self.task_name = str(self.get_parameter("task_name").value)
         self.deployment_mode = bool(self.get_parameter("deployment_mode").value)
         self.deployment_start_active = bool(self.get_parameter("deployment_start_active").value)
@@ -216,6 +223,9 @@ class LeRobotDataBridge(Node):
             "right": None,
         }
         self.latest_camera_samples: list[ImageSample | None] = [None] * len(self.camera_topics)
+        self._camera_frame_sequences = [0] * len(self.camera_topics)
+        self._camera_bundle_sequence = 0
+        self._last_camera_bundle_signature: tuple[int, ...] | None = None
         self._deployment_robots: dict[str, Any] = {}
         self._deployment_grippers: dict[str, Any] = {}
         self._last_deployment_warning_time_s: dict[str, float] = {}
@@ -226,6 +236,9 @@ class LeRobotDataBridge(Node):
         self._socket = self._zmq_context.socket(zmq.PUB)
         self._socket.setsockopt(zmq.SNDHWM, 1)
         self._socket.bind(f"tcp://{self.publish_host}:{self.publish_port}")
+        self._camera_cache_socket = self._zmq_context.socket(zmq.PUB)
+        self._camera_cache_socket.setsockopt(zmq.SNDHWM, 2)
+        self._camera_cache_socket.bind(f"tcp://{self.camera_cache_host}:{self.camera_cache_port}")
         self._command_socket: zmq.Socket | None = None
         self._last_wait_reason: str | None = None
         self._last_wait_reason_log_time_s = 0.0
@@ -291,11 +304,17 @@ class LeRobotDataBridge(Node):
     def _declare_parameters(self) -> None:
         self.declare_parameter("sample_rate_hz", 15.0)
         self.declare_parameter("max_data_age_sec", 0.5)
+        self.declare_parameter("camera_max_age_sec", 0.25)
+        self.declare_parameter("robot_state_max_age_sec", 0.25)
+        self.declare_parameter("gripper_state_max_age_sec", 0.25)
+        self.declare_parameter("max_camera_skew_sec", 0.067)
         self.declare_parameter("publish_host", "127.0.0.1")
         self.declare_parameter("publish_port", 5555)
         self.declare_parameter("command_host", "127.0.0.1")
         self.declare_parameter("command_port", 5556)
         self.declare_parameter("command_max_age_sec", 0.5)
+        self.declare_parameter("camera_cache_host", "127.0.0.1")
+        self.declare_parameter("camera_cache_port", 5557)
         self.declare_parameter("task_name", "franka_gello_teleop")
         self.declare_parameter("deployment_mode", False)
         self.declare_parameter("deployment_start_active", True)
@@ -729,11 +748,13 @@ class LeRobotDataBridge(Node):
             self.get_logger().warning(str(exc))
             return
 
+        self._camera_frame_sequences[camera_index] += 1
         self.latest_camera_samples[camera_index] = ImageSample(
             image=image,
             stamp_s=_stamp_to_float_seconds(msg.header.stamp.sec, msg.header.stamp.nanosec),
             height=msg.height,
             width=msg.width,
+            sequence=self._camera_frame_sequences[camera_index],
         )
 
     def _refresh_deployment_samples(self) -> None:
@@ -783,8 +804,9 @@ class LeRobotDataBridge(Node):
                 break
 
             if isinstance(command, dict):
+                now_s = self._now_s()
                 self._latest_deployment_command = command
-                self._latest_deployment_command_stamp_s = self._now_s()
+                self._latest_deployment_command_stamp_s = now_s
                 if not self._deployment_active:
                     continue
                 if not self._deployment_command_active and self._command_has_payload(command):
@@ -1117,7 +1139,7 @@ class LeRobotDataBridge(Node):
         reference_time_s = self.get_clock().now().nanoseconds * 1e-9
         stale_sources: list[str] = []
         for arm_name in self._required_arms():
-            if reference_time_s - self.latest_robot_arm_samples[arm_name].stamp_s > self.max_data_age_sec:
+            if reference_time_s - self.latest_robot_arm_samples[arm_name].stamp_s > self.robot_state_max_age_sec:
                 stale_sources.append(f"{arm_name} robot joint states")
             if not self.deployment_mode:
                 arm_action_sample = self._arm_action_sample(arm_name)
@@ -1128,7 +1150,7 @@ class LeRobotDataBridge(Node):
             if self.include_gripper and (self.require_gripper_freshness or self.deployment_mode):
                 if (
                     reference_time_s - self.latest_robot_gripper_samples[arm_name].stamp_s
-                    > self.max_data_age_sec
+                    > self.gripper_state_max_age_sec
                 ):
                     stale_sources.append(f"{arm_name} robot gripper states")
                 if (
@@ -1141,9 +1163,18 @@ class LeRobotDataBridge(Node):
                 ):
                     stale_sources.append(f"{arm_name} gripper action")
 
+        camera_stamps = []
         for camera_name, sample in zip(self.camera_names, self.latest_camera_samples, strict=True):
-            if sample is not None and reference_time_s - sample.stamp_s > self.max_data_age_sec:
+            if sample is not None and reference_time_s - sample.stamp_s > self.camera_max_age_sec:
                 stale_sources.append(f"{camera_name} images")
+            if sample is not None:
+                camera_stamps.append(sample.stamp_s)
+
+        if camera_stamps and max(camera_stamps) - min(camera_stamps) > self.max_camera_skew_sec:
+            stale_sources.append(
+                "camera bundle skew "
+                f"({max(camera_stamps) - min(camera_stamps):.3f}s > {self.max_camera_skew_sec:.3f}s)"
+            )
 
         if stale_sources:
             return False, f"waiting for fresh data from {', '.join(stale_sources)}"
@@ -1184,6 +1215,44 @@ class LeRobotDataBridge(Node):
                 else:
                     action.extend(self.latest_gripper_action_samples[arm_name].values)
 
+        bundle_signature = tuple(
+            sample.sequence for sample in self.latest_camera_samples if sample is not None
+        )
+        bundle_new = bundle_signature != self._last_camera_bundle_signature
+        if bundle_new:
+            self._camera_bundle_sequence += 1
+            self._last_camera_bundle_signature = bundle_signature
+        bridge_publish_s = self.get_clock().now().nanoseconds * 1e-9
+        camera_stamps = {
+            name: sample.stamp_s
+            for name, sample in zip(self.camera_names, self.latest_camera_samples, strict=True)
+            if sample is not None
+        }
+        camera_oldest_stamp_s = min(camera_stamps.values()) if camera_stamps else bridge_publish_s
+        camera_newest_stamp_s = max(camera_stamps.values()) if camera_stamps else bridge_publish_s
+        camera_freshness = {
+            name: {
+                "stamp_s": sample.stamp_s,
+                "age_s": max(0.0, bridge_publish_s - sample.stamp_s),
+                "height": sample.height,
+                "width": sample.width,
+                "frame_sequence": sample.sequence,
+            }
+            for name, sample in zip(self.camera_names, self.latest_camera_samples, strict=True)
+            if sample is not None
+        }
+        camera_sync = {
+            "bundle_sequence": self._camera_bundle_sequence,
+            "bundle_ready": True,
+            "bundle_new": bundle_new,
+            # Freshness is anchored to the oldest frame so bundle age cannot hide one stale camera.
+            "reference_stamp_s": camera_oldest_stamp_s,
+            "oldest_stamp_s": camera_oldest_stamp_s,
+            "newest_stamp_s": camera_newest_stamp_s,
+            "max_skew_s": camera_newest_stamp_s - camera_oldest_stamp_s,
+            "max_allowed_skew_s": self.max_camera_skew_sec,
+        }
+
         camera_payload = {}
         for name, sample in zip(self.camera_names, self.latest_camera_samples, strict=True):
             if sample is None:
@@ -1194,7 +1263,36 @@ class LeRobotDataBridge(Node):
                 "stamp_s": sample.stamp_s,
             }
 
-        packet: dict[str, Any] = {
+        state_freshness = {
+            f"{arm_name}_arm": {
+                "stamp_s": self.latest_robot_arm_samples[arm_name].stamp_s,
+                "age_s": max(
+                    0.0,
+                    bridge_publish_s - self.latest_robot_arm_samples[arm_name].stamp_s,
+                ),
+            }
+            for arm_name in self._required_arms()
+        }
+        if self.include_gripper:
+            state_freshness.update(
+                {
+                    f"{arm_name}_gripper": {
+                        "stamp_s": self.latest_robot_gripper_samples[arm_name].stamp_s,
+                        "age_s": max(
+                            0.0,
+                            bridge_publish_s
+                            - self.latest_robot_gripper_samples[arm_name].stamp_s,
+                        ),
+                    }
+                    for arm_name in self._required_arms()
+                }
+            )
+        oldest_robot_state_stamp_s = min(
+            item["stamp_s"] for item in state_freshness.values()
+        )
+
+        packet_base: dict[str, Any] = {
+            "bridge_publish_s": bridge_publish_s,
             "task": self.task_name,
             "state": robot_state,
             "action": action,
@@ -1206,8 +1304,24 @@ class LeRobotDataBridge(Node):
             "action_dim": len(action),
             "include_right_arm": self.include_right_arm,
             "include_gripper": self.include_gripper,
+            "camera_freshness": camera_freshness,
+            "camera_sync": camera_sync,
+            "camera_bundle_sequence": self._camera_bundle_sequence,
+            "robot_state_stamp_s": oldest_robot_state_stamp_s,
+            "robot_state_freshness": state_freshness,
         }
-        self._socket.send_pyobj(packet)
+        self._camera_cache_socket.send_pyobj(packet_base | {"cameras": camera_payload})
+
+        remote_cameras = {}
+        for name, sample in zip(self.camera_names, self.latest_camera_samples, strict=True):
+            if sample is None:
+                continue
+            remote_cameras[name] = {
+                "shape": [sample.height, sample.width, 3],
+                "stamp_s": sample.stamp_s,
+            }
+        remote_packet = packet_base | {"cameras": remote_cameras}
+        self._socket.send_pyobj(remote_packet)
 
         if self.deployment_mode:
             return
@@ -1226,6 +1340,7 @@ class LeRobotDataBridge(Node):
         self._publish_deployment_hold_commands_on_shutdown()
         if self._command_socket is not None:
             self._command_socket.close(0)
+        self._camera_cache_socket.close(0)
         self._socket.close(0)
         self._zmq_context.term()
         return super().destroy_node()
