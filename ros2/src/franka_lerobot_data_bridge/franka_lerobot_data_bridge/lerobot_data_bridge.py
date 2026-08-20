@@ -267,6 +267,8 @@ class LeRobotDataBridge(Node):
         self._socket.setsockopt(zmq.SNDHWM, 1)
         self._socket.bind(f"tcp://{self.publish_host}:{self.publish_port}")
         self._hand_telemetry_socket = None
+        self._hand_telemetry_packet_count = 0
+        self._hand_telemetry_invalid_logged = False
         if self.include_hand:
             self._hand_telemetry_socket = self._zmq_context.socket(zmq.PULL)
             self._hand_telemetry_socket.setsockopt(zmq.RCVHWM, 2)
@@ -326,6 +328,11 @@ class LeRobotDataBridge(Node):
         self.get_logger().info(
             f"Publishing LeRobot samples over ZMQ on tcp://{self.publish_host}:{self.publish_port}"
         )
+        if self.include_hand:
+            self.get_logger().info(
+                "Receiving Wuji hand telemetry on "
+                f"tcp://{self.hand_telemetry_host}:{self.hand_telemetry_port}"
+            )
         if self.deployment_mode:
             self.get_logger().info(
                 f"Deployment mode enabled: reading Franka state via {self.deployment_state_source}."
@@ -784,6 +791,12 @@ class LeRobotDataBridge(Node):
             current = payload.get("current")
             target = payload.get("target")
             if side not in self.latest_hand_samples or not isinstance(current, list) or not isinstance(target, list):
+                if not self._hand_telemetry_invalid_logged:
+                    self.get_logger().warning(
+                        "Ignoring invalid hand telemetry packet: expected side left/right "
+                        "and list-valued current/target fields."
+                    )
+                    self._hand_telemetry_invalid_logged = True
                 continue
             if len(current) != 20 or len(target) != 20:
                 self.get_logger().warning("Ignoring hand telemetry with non-20-joint payload")
@@ -799,6 +812,11 @@ class LeRobotDataBridge(Node):
                 target=target_values,
                 stamp_s=stamp_s,
             )
+            self._hand_telemetry_packet_count += 1
+            if self._hand_telemetry_packet_count == 1:
+                self.get_logger().info(
+                    f"Received first valid {side} hand telemetry packet (20 joints)."
+                )
 
     def _on_camera_image(self, camera_index: int, msg: Image) -> None:
         try:
