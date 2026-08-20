@@ -1396,16 +1396,22 @@ class LeRobotDataBridge(Node):
         }
         self._camera_cache_socket.send_pyobj(packet_base | {"cameras": camera_payload})
 
-        remote_cameras = {}
-        for name, sample in zip(self.camera_names, self.latest_camera_samples, strict=True):
-            if sample is None:
-                continue
-            remote_cameras[name] = {
-                "shape": [sample.height, sample.width, 3],
-                "stamp_s": sample.stamp_s,
+        if self.deployment_mode:
+            remote_cameras = {
+                name: {
+                    "shape": [sample.height, sample.width, 3],
+                    "stamp_s": sample.stamp_s,
+                }
+                for name, sample in zip(
+                    self.camera_names, self.latest_camera_samples, strict=True
+                )
+                if sample is not None
             }
-        remote_packet = packet_base | {"cameras": remote_cameras}
-        self._socket.send_pyobj(remote_packet)
+            self._socket.send_pyobj(packet_base | {"cameras": remote_cameras})
+        else:
+            # The collection recorder consumes this socket directly and needs
+            # the image arrays to construct its LeRobot video features.
+            self._socket.send_pyobj(packet_base)
 
         if self.deployment_mode:
             return
