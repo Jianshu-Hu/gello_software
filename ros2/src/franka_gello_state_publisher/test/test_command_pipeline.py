@@ -23,7 +23,10 @@ class FakeGelloHardware:
         self._reads += 1
         target = self._initial.copy()
         if self._reads >= 2:
-            target[0] += 0.2
+            # This is outside the operational envelope but remains a finite
+            # command. The robot-side controller is responsible for clamping
+            # it to the nearest safe target.
+            target[0] = FR3_SAFE_POSITION_UPPER_RAD[0] + 0.1
         return target, 0.5
 
     def update_dynamixel_control_parameter(self, _name, _value) -> None:
@@ -61,4 +64,4 @@ def test_raw_waypoint_topic_is_low_rate(monkeypatch, tmp_path) -> None:
         rclpy.shutdown()
 
     assert 3 <= len(raw_messages) <= 7
-    assert raw_messages[-1].position[0] - raw_messages[0].position[0] > 0.19
+    assert raw_messages[-1].position[0] > FR3_SAFE_POSITION_UPPER_RAD[0]

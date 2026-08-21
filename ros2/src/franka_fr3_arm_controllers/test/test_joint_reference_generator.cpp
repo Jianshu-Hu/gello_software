@@ -45,6 +45,38 @@ TEST(JointReferenceGeneratorTest, KeepsReferenceWithinConfiguredLimits) {
   EXPECT_NEAR(generator.state().position[0], 0.1, 1e-3);
 }
 
+TEST(JointReferenceGeneratorTest, ClipsUnreachableTargetToNearestSafePoint) {
+  JointReferenceGenerator generator;
+  JointReferenceGenerator::Vector initial = {0.0, 0.0, 0.0, -0.5, 0.0, 1.0, 0.0};
+  generator.reset(initial);
+
+  JointReferenceGenerator::Vector requested = initial;
+  requested[0] = JointReferenceGenerator::kPositionUpper[0] + 1.0;
+  requested[1] = JointReferenceGenerator::kPositionLower[1] - 1.0;
+  ASSERT_TRUE(generator.setTarget(requested));
+
+  EXPECT_DOUBLE_EQ(generator.target()[0], JointReferenceGenerator::kPositionUpper[0]);
+  EXPECT_DOUBLE_EQ(generator.target()[1], JointReferenceGenerator::kPositionLower[1]);
+  for (std::size_t joint = 2; joint < JointReferenceGenerator::kJoints; ++joint) {
+    EXPECT_DOUBLE_EQ(generator.target()[joint], requested[joint]);
+  }
+}
+
+TEST(JointReferenceGeneratorTest, RecoversFromMeasuredStateOutsideEnvelope) {
+  JointReferenceGenerator generator;
+  JointReferenceGenerator::Vector initial = {0.0, 0.0, 0.0, -0.5, 0.0, 1.0, 0.0};
+  initial[0] = JointReferenceGenerator::kPositionUpper[0] + 0.1;
+  generator.reset(initial);
+
+  JointReferenceGenerator::Vector target = initial;
+  target[0] = JointReferenceGenerator::kPositionUpper[0];
+  ASSERT_TRUE(generator.setTarget(target));
+  for (int cycle = 0; cycle < 2000; ++cycle) {
+    generator.advance(0.001);
+  }
+  EXPECT_NEAR(generator.state().position[0], JointReferenceGenerator::kPositionUpper[0], 1e-3);
+}
+
 TEST(JointReferenceGeneratorTest, ReplanningPreservesReferenceState) {
   JointReferenceGenerator generator;
   JointReferenceGenerator::Vector initial = {0.0, 0.0, 0.0, -0.5, 0.0, 1.0, 0.0};

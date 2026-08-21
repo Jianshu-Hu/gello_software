@@ -116,17 +116,33 @@ bool JointReferenceGenerator::limitsSatisfied(const Coefficients& coefficients,
   // the small gap between sampled extrema and exact polynomial extrema.
   constexpr std::size_t kChecks = 256;
   for (std::size_t i = 0; i < kJoints; ++i) {
+    const double start_position = evaluate(coefficients[i], 0.0);
+    const bool starts_below = start_position < kPositionLower[i];
+    const bool starts_above = start_position > kPositionUpper[i];
+    bool entered_envelope = !(starts_below || starts_above);
+    double previous_position = start_position;
     for (std::size_t sample = 0; sample <= kChecks; ++sample) {
       const double t = duration * static_cast<double>(sample) / static_cast<double>(kChecks);
       const double position = evaluate(coefficients[i], t);
       const double velocity = std::abs(evaluateVelocity(coefficients[i], t));
       const double acceleration = std::abs(evaluateAcceleration(coefficients[i], t));
-      const bool outside_position_envelope =
-          sample != 0 && (position < kPositionLower[i] || position > kPositionUpper[i]);
+      const bool inside_position_envelope =
+          position >= kPositionLower[i] && position <= kPositionUpper[i];
+      if (inside_position_envelope) {
+        entered_envelope = true;
+      }
+      // A measured activation state can be outside the operational envelope.
+      // Allow only the initial monotonic recovery back into the envelope;
+      // after entry, every sample must remain bounded.
+      const bool initial_recovery =
+          !entered_envelope && ((starts_below && position >= previous_position) ||
+                                (starts_above && position <= previous_position));
+      const bool outside_position_envelope = !inside_position_envelope && !initial_recovery;
       if (outside_position_envelope || velocity > 0.98 * kMaxVelocity[i] ||
           acceleration > 0.98 * kMaxAcceleration[i]) {
         return false;
       }
+      previous_position = position;
     }
   }
   return true;

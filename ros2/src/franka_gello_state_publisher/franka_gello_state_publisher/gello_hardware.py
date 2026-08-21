@@ -71,6 +71,34 @@ class DynamixelControlConfig:
 class GelloHardware:
     """Hardware interface for GELLO teleoperation device."""
 
+    # Match the shared operational envelope enforced by the FR3 controller.
+    JOINT_POSITION_LOWER_RAD = np.array(
+        [-2.6937, -1.7337, -2.8507, -2.9921, -2.7565, 0.5945, -2.9659]
+    )
+    JOINT_POSITION_UPPER_RAD = np.array(
+        [2.6937, 1.7337, 2.8507, -0.2018, 2.7565, 4.4669, 2.9659]
+    )
+    MID_JOINT_POSITIONS_RAD = 0.5 * (
+        JOINT_POSITION_LOWER_RAD + JOINT_POSITION_UPPER_RAD
+    )
+
+    @staticmethod
+    def normalize_joint_positions(
+        raw_positions: np.ndarray,
+        offsets: np.ndarray,
+        joint_signs: np.ndarray,
+    ) -> np.ndarray:
+        """Select the encoder revolution nearest each FR3 joint's working range."""
+        calibrated = (raw_positions - offsets) * joint_signs
+        return (
+            np.mod(
+                calibrated - GelloHardware.MID_JOINT_POSITIONS_RAD + np.pi,
+                2 * np.pi,
+            )
+            - np.pi
+            + GelloHardware.MID_JOINT_POSITIONS_RAD
+        )
+
     def __init__(
         self,
         hardware_config: GelloHardwareParams,
@@ -103,6 +131,13 @@ class GelloHardware:
         )
 
         self._initialize_parameters()
+        initial_joints_raw = self._driver.get_joints()[: self._num_arm_joints]
+        self._prev_arm_joints_raw = initial_joints_raw.copy()
+        self._prev_arm_joints = self.normalize_joint_positions(
+            initial_joints_raw,
+            self._best_offsets,
+            self._joint_signs,
+        )
         self._driver.start_joint_polling()
 
     def _initialize_driver(self) -> None:
@@ -147,13 +182,24 @@ class GelloHardware:
         """Read current joint positions and gripper state."""
         gello_joints_raw = self._driver.get_joints()
         gello_arm_joints_raw = gello_joints_raw[: self._num_arm_joints]
-        gello_arm_joints = (gello_arm_joints_raw - self._best_offsets) * self._joint_signs
+        gello_arm_joints = self.process_arm_joint_positions(gello_arm_joints_raw)
 
         gripper_position = 0.0
         if self._gripper:
             gripper_position = self._gripper_readout_to_percent(gello_joints_raw[-1])
 
         return gello_arm_joints, gripper_position
+
+    def process_arm_joint_positions(self, arm_joints_raw: np.ndarray) -> np.ndarray:
+        """Track continuous joint positions across encoder revolution boundaries."""
+        raw_delta = np.mod(
+            arm_joints_raw - self._prev_arm_joints_raw + np.pi,
+            2 * np.pi,
+        ) - np.pi
+        arm_joints = self._prev_arm_joints + raw_delta * self._joint_signs
+        self._prev_arm_joints_raw = arm_joints_raw.copy()
+        self._prev_arm_joints = arm_joints.copy()
+        return arm_joints
 
     def disable_torque(self) -> None:
         """Disable torque on all joints."""

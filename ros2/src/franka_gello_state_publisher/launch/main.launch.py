@@ -56,7 +56,7 @@ def generate_launch_description():
         [
             DeclareLaunchArgument(
                 "config_file",
-                default_value="example_single.yaml",
+                default_value="gello_single.yaml",
                 description="Name of the gello configuration file to load",
             ),
             DeclareLaunchArgument(

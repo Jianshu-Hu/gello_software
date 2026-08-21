@@ -210,10 +210,17 @@ void ConfigurableJointImpedanceController::jointStateCallback_(
   for (int i = 0; i < num_joints; ++i) {
     command.target[i] = msg.position[i];
   }
+  const auto requested_target = command.target;
   if (!JointReferenceGenerator::sanitizeTarget(command.target, &command.target)) {
     RCLCPP_WARN_THROTTLE(get_node()->get_logger(), *get_node()->get_clock(), 1000,
                          "Rejecting non-finite joint target");
     return;
+  }
+  if (requested_target[6] != command.target[6]) {
+    RCLCPP_WARN_THROTTLE(
+        get_node()->get_logger(), *get_node()->get_clock(), 1000,
+        "Clamped FR3 joint7 target from %.4f rad to %.4f rad; check GELLO joint7 calibration",
+        requested_target[6], command.target[6]);
   }
   command.received_time_s = receive_time.seconds();
   command.sequence = ++command_sequence_;

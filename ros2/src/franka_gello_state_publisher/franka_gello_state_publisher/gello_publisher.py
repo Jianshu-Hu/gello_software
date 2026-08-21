@@ -30,8 +30,6 @@ def _add_repository_root_to_path() -> None:
 _add_repository_root_to_path()
 
 from utils.limit import (  # noqa: E402
-    FR3_SAFE_POSITION_LOWER_RAD,
-    FR3_SAFE_POSITION_UPPER_RAD,
     SustainedViolationMonitor,
 )
 
@@ -140,18 +138,16 @@ class GelloPublisher(Node):
         raw_target = np.asarray(gello_arm_joints, dtype=np.float64)
         if raw_target.shape != (7,) or not np.all(np.isfinite(raw_target)):
             violation_names = ("non_finite",)
-            accepted_target = None
+            command_target = None
         else:
-            position_violation = np.logical_or(
-                raw_target < FR3_SAFE_POSITION_LOWER_RAD,
-                raw_target > FR3_SAFE_POSITION_UPPER_RAD,
-            )
-            violation_names = ("position",) if np.any(position_violation) else ()
-            accepted_target = np.clip(
-                raw_target,
-                FR3_SAFE_POSITION_LOWER_RAD,
-                FR3_SAFE_POSITION_UPPER_RAD,
-            )
+            # Position safety is enforced by the robot-side controller. It
+            # clamps each finite waypoint to the nearest reachable point in
+            # the operational envelope and publishes that result on
+            # ``accepted_joint_states`` before planning the trajectory. Keep
+            # the GELLO topic raw so startup waypoints outside that envelope
+            # can be handled by the same controller path as all other targets.
+            violation_names = ()
+            command_target = raw_target
 
         if violation_names:
             should_stop = self._unsafe_target_monitor.update(True, now)
@@ -171,7 +167,7 @@ class GelloPublisher(Node):
         else:
             self._unsafe_target_monitor.update(False, now)
 
-        if accepted_target is None:
+        if command_target is None:
             return
 
         gripper_joint_states = Float32()
@@ -179,7 +175,7 @@ class GelloPublisher(Node):
         if not rclpy.ok():
             return
         try:
-            self.raw_arm_joint_publisher.publish(self._joint_state_message(accepted_target))
+            self.raw_arm_joint_publisher.publish(self._joint_state_message(command_target))
             self.gripper_joint_publisher.publish(gripper_joint_states)
         except _rclpy.RCLError:
             # Another required node may have initiated ROS shutdown between

@@ -110,14 +110,14 @@ If you add new dependencies to your packages, remember to update the relevant `r
 
 ## Getting Started - Pre-assembled Franka GELLO Single with the Franka Hand
 
-- Configure the `com_port` in `franka_gello_single.yaml` and `example_fr3_config_franka_hand.yaml`, and set the `robot_ip` in `example_fr3_config.yaml`. For a complete description, see the [Detailed Launch Routine](#detailed-launch-routine) section.
+- Configure the `com_port` in `gello_single.yaml` and `example_fr3_config_franka_hand.yaml`, and set the `robot_ip` in `example_fr3_config.yaml`. For a complete description, see the [Detailed Launch Routine](#detailed-launch-routine) section.
 - Run the following commands:
     ```bash
       # Follow the Setup Environment section. If using Option 2, substitute /workspace/ with the path to the gello_software folder
       # Go to the ROS 2 workspace, build it, and source it
       cd /workspace/ros2 && colcon build && source install/setup.bash
       # Start the GELLO node
-      ros2 launch franka_gello_state_publisher main.launch.py config_file:=franka_gello_single.yaml
+      ros2 launch franka_gello_state_publisher main.launch.py config_file:=gello_single.yaml
       # Start the Franka Hand node
       ros2 launch franka_gripper_manager franka_gripper_client.launch.py config_file:=example_fr3_config_franka_hand.yaml
       # Hold the GELLO and place it in a comfortable position with some distance from the base pin
@@ -127,14 +127,14 @@ If you add new dependencies to your packages, remember to update the relevant `r
 
 ## Getting Started - Pre-assembled Franka GELLO Duo with the Franka Vision and Manipulation Kit
 
-- Configure the `com_port` in `franka_gello_duo.yaml` and `example_fr3_duo_config_robotiq.yaml`, and set the `robot_ip` in `example_fr3_duo_config.yaml`. For a complete description, see the [Detailed Launch Routine](#detailed-launch-routine) section.
+- Configure the `com_port` in `gello_duo.yaml` and `example_fr3_duo_config_robotiq.yaml`, and set the `robot_ip` in `example_fr3_duo_config.yaml`. For a complete description, see the [Detailed Launch Routine](#detailed-launch-routine) section.
 - Run the following commands:
     ```bash
       # Follow the Setup Environment section. If using Option 2, substitute /workspace/ with the path to the gello_software folder
       # Go to the ROS 2 workspace, build it, and source it
       cd /workspace/ros2 && colcon build && source install/setup.bash
       # Start the GELLO node
-      ros2 launch franka_gello_state_publisher main.launch.py config_file:=franka_gello_duo.yaml
+      ros2 launch franka_gello_state_publisher main.launch.py config_file:=gello_duo.yaml
       # Start the Robotiq gripper node
       ros2 launch franka_gripper_manager robotiq_gripper_controller_client.launch.py config_file:=example_fr3_duo_config_robotiq.yaml
       # Hold the GELLOs and place them in a comfortable position with some distance from the base pins
@@ -231,7 +231,7 @@ Create a configuration file in `src/franka_gello_state_publisher/config/` or mod
 ros2 launch franka_gello_state_publisher main.launch.py [config_file:=your_config.yaml]
 ```
 
-The `config_file` argument is **optional**. If not provided, it defaults to `example_single.yaml` in the `franka_gello_state_publisher/config/` directory.
+The `config_file` argument is **optional**. If not provided, it defaults to `gello_single.yaml` in the `franka_gello_state_publisher/config/` directory.
 
 **Configuration parameters:**
 
@@ -315,6 +315,13 @@ This package provides a shared configurable Joint Impedance controller for the F
 - Implements a `JointImpedanceController` for controlling the robot's torques.
 - Collection mode subscribes to `/gello/raw_joint_states`; deployment mode subscribes to `/deployment/joint_states`.
 - Both modes use the same robot-side stateful reference generator and impedance law.
+- On activation, the reference generator starts from the measured robot joint
+  state. Every finite command is then clamped per joint to the nearest point
+  in the operational position envelope before a bounded trajectory is planned.
+- The `accepted_joint_states` topic for each mode contains that clamped target
+  waypoint, not the high-rate interpolated reference. Collection uses
+  `/gello/accepted_joint_states`; deployment uses
+  `/deployment/accepted_joint_states`.
 - The `/franka/commanded_joint_states` topic is a 100 Hz diagnostic stream; the 1 kHz reference is used internally.
 
 #### Launch Files:
