@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import math
 import re
 import sys
 import time
@@ -90,6 +91,54 @@ class HandSample:
     current: list[float]
     target: list[float]
     stamp_s: float
+
+
+@dataclass
+class PoseSample:
+    values: list[float]
+    stamp_s: float
+
+
+def _pose_message_to_vector(pose: Any) -> list[float]:
+    """Convert geometry_msgs Pose to x/y/z/roll/pitch/yaw."""
+    x, y, z = float(pose.position.x), float(pose.position.y), float(pose.position.z)
+    qx, qy, qz, qw = (float(pose.orientation.x), float(pose.orientation.y),
+                      float(pose.orientation.z), float(pose.orientation.w))
+    sinr_cosp = 2.0 * (qw * qx + qy * qz)
+    cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
+    roll = math.atan2(sinr_cosp, cosr_cosp)
+    sinp = 2.0 * (qw * qy - qz * qx)
+    pitch = math.copysign(math.pi / 2.0, sinp) if abs(sinp) >= 1.0 else math.asin(sinp)
+    siny_cosp = 2.0 * (qw * qz + qx * qy)
+    cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
+    yaw = math.atan2(siny_cosp, cosy_cosp)
+    return [x, y, z, roll, pitch, yaw]
+
+
+def _pose_message_to_matrix(pose: Any) -> np.ndarray:
+    x, y, z = float(pose.position.x), float(pose.position.y), float(pose.position.z)
+    qx, qy, qz, qw = (float(pose.orientation.x), float(pose.orientation.y),
+                      float(pose.orientation.z), float(pose.orientation.w))
+    return np.asarray(
+        [
+            [1 - 2 * (qy * qy + qz * qz), 2 * (qx * qy - qz * qw), 2 * (qx * qz + qy * qw), x],
+            [2 * (qx * qy + qz * qw), 1 - 2 * (qx * qx + qz * qz), 2 * (qy * qz - qx * qw), y],
+            [2 * (qx * qz - qy * qw), 2 * (qy * qz + qx * qw), 1 - 2 * (qx * qx + qy * qy), z],
+            [0.0, 0.0, 0.0, 1.0],
+        ], dtype=float
+    )
+
+
+def _transform_to_pose_vector(values: Any) -> list[float]:
+    matrix = np.asarray(values, dtype=float).reshape((4, 4), order="F")
+    pitch = math.asin(float(np.clip(-matrix[2, 0], -1.0, 1.0)))
+    if abs(math.cos(pitch)) > 1e-8:
+        roll = math.atan2(float(matrix[2, 1]), float(matrix[2, 2]))
+        yaw = math.atan2(float(matrix[1, 0]), float(matrix[0, 0]))
+    else:
+        roll = 0.0
+        yaw = math.atan2(float(-matrix[0, 1]), float(matrix[1, 1]))
+    return [float(matrix[0, 3]), float(matrix[1, 3]), float(matrix[2, 3]), roll, pitch, yaw]
 
 
 @dataclass
@@ -188,6 +237,11 @@ class LeRobotDataBridge(Node):
                 f"include_right_arm={self.include_right_arm}"
             )
         self.arm_mode = configured_arm_mode
+        self.state_action_mode = str(self.get_parameter("state_action_mode").value).strip().lower()
+        if self.state_action_mode in {"ee", "pose", "end_effector_pose", "end-effector"}:
+            self.state_action_mode = "end_effector"
+        if self.state_action_mode not in {"joint", "end_effector"}:
+            raise ValueError("state_action_mode must be 'joint' or 'end_effector'")
         self.require_gripper_freshness = bool(
             self.get_parameter("require_gripper_freshness").value
         )
@@ -248,6 +302,12 @@ class LeRobotDataBridge(Node):
         self.latest_robot_gripper_samples: dict[str, JointSample | None] = {"left": None, "right": None}
         self.latest_gripper_action_samples: dict[str, JointSample | None] = {"left": None, "right": None}
         self.latest_hand_samples: dict[str, HandSample | None] = {"left": None, "right": None}
+        self.latest_robot_ee_samples: dict[str, PoseSample | None] = {"left": None, "right": None}
+        self.latest_target_ee_samples: dict[str, PoseSample | None] = {"left": None, "right": None}
+        self.latest_flange_to_ee: dict[str, np.ndarray | None] = {"left": None, "right": None}
+        self._ee_ik_model: Any | None = None
+        self._ee_ik_frame_id: int | None = None
+        self._ee_ik_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self.last_published_arm_action_samples: dict[str, JointSample | None] = {
             "left": None,
             "right": None,
@@ -315,6 +375,7 @@ class LeRobotDataBridge(Node):
             )
         else:
             self._create_live_state_subscriptions()
+        self._create_ee_state_subscriptions()
 
         for idx, topic in enumerate(self.camera_topics):
             self.create_subscription(
@@ -376,6 +437,7 @@ class LeRobotDataBridge(Node):
         self.declare_parameter("hand_telemetry_port", 5558)
         self.declare_parameter("include_right_arm", True)
         self.declare_parameter("arm_mode", "")
+        self.declare_parameter("state_action_mode", "joint")
         self.declare_parameter("require_gripper_freshness", False)
         self.declare_parameter("arm_action_source", "topic")
 
@@ -468,6 +530,20 @@ class LeRobotDataBridge(Node):
                     lambda msg, side=arm_name: self._store_gripper_action_sample(side, msg),
                     10,
                 )
+    def _create_ee_state_subscriptions(self) -> None:
+        try:
+            from franka_msgs.msg import FrankaRobotState
+        except ModuleNotFoundError as exc:
+            raise RuntimeError(
+                "franka_msgs is required because the bridge records measured and target end-effector poses."
+            ) from exc
+        for arm_name in self._required_arms():
+            self.create_subscription(
+                FrankaRobotState,
+                f"/{arm_name}/franka_robot_state_broadcaster/robot_state",
+                lambda message, selected=arm_name: self._store_robot_state(selected, message),
+                10,
+            )
 
     def _initialize_deployment_clients(self) -> None:
         if pylibfranka is None:
@@ -777,6 +853,24 @@ class LeRobotDataBridge(Node):
             stamp_s=_stamp_to_float_seconds(msg.header.stamp.sec, msg.header.stamp.nanosec),
         )
 
+    def _store_robot_state(self, arm_name: str, msg: Any) -> None:
+        try:
+            current = _pose_message_to_vector(msg.o_t_ee.pose)
+            target = _pose_message_to_vector(msg.o_t_ee_d.pose)
+            stamp = _stamp_to_float_seconds(msg.o_t_ee.header.stamp.sec, msg.o_t_ee.header.stamp.nanosec)
+        except (AttributeError, TypeError, ValueError):
+            return
+        if not all(math.isfinite(value) for value in (*current, *target)):
+            return
+        if stamp <= 0.0:
+            stamp = self._now_s()
+        self.latest_robot_ee_samples[arm_name] = PoseSample(values=current, stamp_s=stamp)
+        self.latest_target_ee_samples[arm_name] = PoseSample(values=target, stamp_s=stamp)
+        try:
+            self.latest_flange_to_ee[arm_name] = _pose_message_to_matrix(msg.f_t_ee.pose)
+        except (AttributeError, TypeError, ValueError):
+            pass
+
     def _drain_hand_telemetry(self) -> None:
         if self._hand_telemetry_socket is None:
             return
@@ -846,6 +940,18 @@ class LeRobotDataBridge(Node):
                     values=[float(value) for value in np.asarray(state.q, dtype=float)[:7]],
                     stamp_s=self._now_s(),
                 )
+                try:
+                    current_pose = _transform_to_pose_vector(state.O_T_EE)
+                    target_transform = getattr(state, "O_T_EE_d", state.O_T_EE)
+                    target_pose = _transform_to_pose_vector(target_transform)
+                    stamp = self._now_s()
+                    self.latest_robot_ee_samples[arm_name] = PoseSample(current_pose, stamp)
+                    self.latest_target_ee_samples[arm_name] = PoseSample(target_pose, stamp)
+                    self.latest_flange_to_ee[arm_name] = np.asarray(
+                        getattr(state, "F_T_EE"), dtype=float
+                    ).reshape((4, 4), order="F")
+                except (AttributeError, TypeError, ValueError):
+                    pass
             except Exception as exc:
                 self._log_deployment_warning(
                     f"{arm_name}_robot",
@@ -898,6 +1004,9 @@ class LeRobotDataBridge(Node):
         for arm_name in self._required_arms():
             joint_target = command.get(f"{arm_name}_joint_target")
             if isinstance(joint_target, list) and joint_target:
+                return True
+            ee_target = command.get(f"{arm_name}_ee_pose_target")
+            if isinstance(ee_target, list) and len(ee_target) == 6:
                 return True
             gripper_command = command.get(f"{arm_name}_gripper_command")
             if gripper_command is not None:
@@ -1080,6 +1189,8 @@ class LeRobotDataBridge(Node):
             if not self._deployment_arm_controller_available.get(arm_name, True):
                 continue
             target = command.get(f"{arm_name}_joint_target")
+            if target is None and isinstance(command.get(f"{arm_name}_ee_pose_target"), list):
+                target = self._solve_ee_command(arm_name, command[f"{arm_name}_ee_pose_target"])
             publisher = self._deployment_joint_command_publishers.get(arm_name)
             if publisher is None or not isinstance(target, list) or len(target) != 7:
                 continue
@@ -1111,6 +1222,29 @@ class LeRobotDataBridge(Node):
             msg.data = clamped_value
             publisher.publish(msg)
             self._last_published_gripper_command[arm_name] = clamped_value
+
+    def _solve_ee_command(self, arm_name: str, target_values: list[Any]) -> list[float] | None:
+        target = np.asarray(target_values, dtype=float)
+        current = self.latest_robot_arm_samples.get(arm_name)
+        flange_to_ee = self.latest_flange_to_ee.get(arm_name)
+        if target.shape != (6,) or current is None or flange_to_ee is None:
+            return None
+        cached = self._ee_ik_cache.get(arm_name)
+        if cached is not None and np.max(np.abs(cached[0] - target)) < 1e-6:
+            return cached[1].tolist()
+        try:
+            from data_collection.move_to_target_ee import build_fr3_model, pose_vector_to_matrix, solve_fr3_ik
+            if self._ee_ik_model is None or self._ee_ik_frame_id is None:
+                self._ee_ik_model, self._ee_ik_frame_id = build_fr3_model()
+            result = solve_fr3_ik(
+                np.asarray(current.values, dtype=float), pose_vector_to_matrix(target),
+                np.asarray(flange_to_ee, dtype=float), self._ee_ik_model, self._ee_ik_frame_id,
+            )
+        except Exception as exc:
+            self.get_logger().warning(f"Unable to solve EE deployment target for {arm_name}: {exc}")
+            return None
+        self._ee_ik_cache[arm_name] = (target.copy(), result.q.copy())
+        return result.q.tolist()
 
     def _publish_deployment_hold_commands_on_shutdown(self) -> None:
         if not self.deployment_mode:
@@ -1175,6 +1309,8 @@ class LeRobotDataBridge(Node):
         return [0.0] * len(sample.values)
 
     def _arm_action_representation(self) -> str:
+        if self.state_action_mode == "end_effector":
+            return "delta_end_effector_pose"
         if self.deployment_mode:
             return "absolute_joint_position"
         if self.arm_action_source in {"topic_delta", "robot_delta"}:
@@ -1195,6 +1331,8 @@ class LeRobotDataBridge(Node):
         for arm_name in self._required_arms():
             if self.latest_robot_arm_samples[arm_name] is None:
                 return False, f"waiting for {arm_name} robot joint states"
+            if self.latest_robot_ee_samples[arm_name] is None or self.latest_target_ee_samples[arm_name] is None:
+                return False, f"waiting for {arm_name} end-effector pose state"
             if not self.deployment_mode and self._arm_action_sample(arm_name) is None:
                 return False, f"waiting for {arm_name} action joint states"
             if self.include_gripper and self.latest_robot_gripper_samples[arm_name] is None:
@@ -1221,6 +1359,8 @@ class LeRobotDataBridge(Node):
         for arm_name in self._required_arms():
             if reference_time_s - self.latest_robot_arm_samples[arm_name].stamp_s > self.robot_state_max_age_sec:
                 stale_sources.append(f"{arm_name} robot joint states")
+            if reference_time_s - self.latest_robot_ee_samples[arm_name].stamp_s > self.robot_state_max_age_sec:
+                stale_sources.append(f"{arm_name} end-effector pose")
             if not self.deployment_mode:
                 arm_action_sample = self._arm_action_sample(arm_name)
                 if arm_action_sample is not None and (
@@ -1286,12 +1426,27 @@ class LeRobotDataBridge(Node):
 
         robot_state: list[float] = []
         action: list[float] = []
+        ee_pose: list[float] = []
+        target_ee_pose: list[float] = []
+        delta_ee_pose: list[float] = []
         for arm_name in self._required_arms():
-            robot_state.extend(self.latest_robot_arm_samples[arm_name].values)
-            if self.deployment_mode:
-                action.extend(self._deployment_arm_action_values(arm_name))
+            current_pose = self.latest_robot_ee_samples[arm_name].values
+            target_pose = self.latest_target_ee_samples[arm_name].values
+            ee_pose.extend(current_pose)
+            target_ee_pose.extend(target_pose)
+            delta_ee_pose.extend(np.asarray(target_pose, dtype=float) - np.asarray(current_pose, dtype=float))
+            if self.state_action_mode == "end_effector":
+                robot_state.extend(current_pose)
+                action.extend(
+                    [0.0] * 6 if self.deployment_mode else
+                    (np.asarray(target_pose, dtype=float) - np.asarray(current_pose, dtype=float)).tolist()
+                )
             else:
-                action.extend(self._arm_action_values(arm_name))
+                robot_state.extend(self.latest_robot_arm_samples[arm_name].values)
+                if self.deployment_mode:
+                    action.extend(self._deployment_arm_action_values(arm_name))
+                else:
+                    action.extend(self._arm_action_values(arm_name))
             if self.include_gripper:
                 robot_state.extend(self.latest_robot_gripper_samples[arm_name].values)
                 if self.deployment_mode:
@@ -1396,6 +1551,10 @@ class LeRobotDataBridge(Node):
             "task": self.task_name,
             "state": robot_state,
             "action": action,
+            "ee_pose": ee_pose,
+            "target_ee_pose": target_ee_pose,
+            "delta_ee_pose": delta_ee_pose,
+            "state_action_mode": self.state_action_mode,
             "arm_action_representation": self._arm_action_representation(),
             "gripper_action_representation": self._gripper_action_representation(),
             "camera_names": self.camera_names,

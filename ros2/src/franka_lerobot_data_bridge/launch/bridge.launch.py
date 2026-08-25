@@ -36,6 +36,7 @@ def generate_bridge_node(context):
     include_gripper_text = LaunchConfiguration("include_gripper").perform(context).strip().lower()
     include_hand_text = LaunchConfiguration("include_hand").perform(context).strip().lower()
     arm_mode = LaunchConfiguration("arm_mode").perform(context).strip().lower()
+    state_action_mode = LaunchConfiguration("state_action_mode").perform(context).strip().lower()
     hand_telemetry_host = LaunchConfiguration("hand_telemetry_host").perform(context)
     hand_telemetry_port = int(LaunchConfiguration("hand_telemetry_port").perform(context))
     overrides = {}
@@ -57,6 +58,8 @@ def generate_bridge_node(context):
         overrides["include_hand"] = include_hand_text == "true"
     if arm_mode:
         overrides["arm_mode"] = arm_mode
+    if state_action_mode in {"joint", "end_effector"}:
+        overrides["state_action_mode"] = state_action_mode
     if hand_telemetry_host:
         overrides["hand_telemetry_host"] = hand_telemetry_host
     if hand_telemetry_port > 0:
@@ -125,6 +128,11 @@ def generate_launch_description():
                 "arm_mode",
                 default_value="",
                 description="Override trajectory arm setting (duo, left, or right).",
+            ),
+            DeclareLaunchArgument(
+                "state_action_mode",
+                default_value="",
+                description="Policy state/action representation: joint or end_effector.",
             ),
             DeclareLaunchArgument(
                 "hand_telemetry_host",
