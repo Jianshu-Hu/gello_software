@@ -8,6 +8,9 @@ from launch_ros.substitutions import FindPackageShare
 import yaml
 
 
+_RMW_LOG_LEVEL_ARGS = ["--ros-args", "--log-level", "rmw_cyclonedds_cpp:=ERROR"]
+
+
 def _load_camera_parameters(config_file):
     with open(config_file, "r", encoding="utf-8") as file:
         loaded = yaml.safe_load(file) or {}
@@ -46,6 +49,7 @@ def generate_camera_nodes(context):
             executable="realsense_camera_publisher",
             name=f"realsense_camera_publisher_{camera_name}",
             parameters=[node_parameters],
+            arguments=_RMW_LOG_LEVEL_ARGS,
             output="screen",
         )
         if enabled_camera_count == 0:

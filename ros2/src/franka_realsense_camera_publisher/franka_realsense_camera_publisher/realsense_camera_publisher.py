@@ -7,6 +7,7 @@ from typing import Any
 import numpy as np
 import rclpy
 from rclpy.executors import ExternalShutdownException
+from rclpy.impl.implementation_singleton import rclpy_implementation as _rclpy
 from rclpy.node import Node
 from sensor_msgs.msg import Image
 
@@ -429,6 +430,11 @@ class RealSenseCameraPublisher(Node):
                     camera.warned_no_frame = True
                 continue
 
+            # SIGINT can invalidate the ROS context while wait_for_frames() is
+            # blocked.  Stop before building a message against that context.
+            if self._shutdown_event.is_set() or not rclpy.ok():
+                break
+
             color_frame = frames.get_color_frame()
             if not color_frame:
                 if not camera.warned_no_frame:
@@ -465,7 +471,14 @@ class RealSenseCameraPublisher(Node):
             msg.is_bigendian = False
             msg.step = frame_width * 3
             msg.data = image_bytes
-            camera.publisher.publish(msg)
+            try:
+                camera.publisher.publish(msg)
+            except _rclpy.RCLError:
+                # ROS may shut down between the context check above and this
+                # call.  Suppress only that expected teardown race.
+                if self._shutdown_event.is_set() or not rclpy.ok():
+                    break
+                raise
 
     def destroy_node(self) -> bool:
         self._shutdown_event.set()

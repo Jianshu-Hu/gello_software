@@ -8,6 +8,9 @@ from launch_ros.actions import Node
 from launch_ros.substitutions import FindPackageShare
 
 
+_RMW_LOG_LEVEL_ARGS = ["--ros-args", "--log-level", "rmw_cyclonedds_cpp:=ERROR"]
+
+
 def generate_bridge_node(context):
     config_file_name = LaunchConfiguration("config_file").perform(context)
     package_share_dir = FindPackageShare("franka_lerobot_data_bridge").perform(context)
@@ -71,6 +74,7 @@ def generate_bridge_node(context):
             executable="lerobot_data_bridge",
             name="lerobot_data_bridge",
             parameters=[config_file, overrides],
+            arguments=_RMW_LOG_LEVEL_ARGS,
             output="screen",
         )
     ]
