@@ -305,6 +305,8 @@ class LeRobotDataBridge(Node):
         self.latest_robot_ee_samples: dict[str, PoseSample | None] = {"left": None, "right": None}
         self.latest_target_ee_samples: dict[str, PoseSample | None] = {"left": None, "right": None}
         self.latest_flange_to_ee: dict[str, np.ndarray | None] = {"left": None, "right": None}
+        self._target_fk: Any | None = None
+        self._matrix_to_pose_vector: Any | None = None
         self._ee_ik_model: Any | None = None
         self._ee_ik_frame_id: int | None = None
         self._ee_ik_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -856,16 +858,14 @@ class LeRobotDataBridge(Node):
     def _store_robot_state(self, arm_name: str, msg: Any) -> None:
         try:
             current = _pose_message_to_vector(msg.o_t_ee.pose)
-            target = _pose_message_to_vector(msg.o_t_ee_d.pose)
             stamp = _stamp_to_float_seconds(msg.o_t_ee.header.stamp.sec, msg.o_t_ee.header.stamp.nanosec)
         except (AttributeError, TypeError, ValueError):
             return
-        if not all(math.isfinite(value) for value in (*current, *target)):
+        if not all(math.isfinite(value) for value in current):
             return
         if stamp <= 0.0:
             stamp = self._now_s()
         self.latest_robot_ee_samples[arm_name] = PoseSample(values=current, stamp_s=stamp)
-        self.latest_target_ee_samples[arm_name] = PoseSample(values=target, stamp_s=stamp)
         try:
             self.latest_flange_to_ee[arm_name] = _pose_message_to_matrix(msg.f_t_ee.pose)
         except (AttributeError, TypeError, ValueError):
@@ -1331,8 +1331,10 @@ class LeRobotDataBridge(Node):
         for arm_name in self._required_arms():
             if self.latest_robot_arm_samples[arm_name] is None:
                 return False, f"waiting for {arm_name} robot joint states"
-            if self.latest_robot_ee_samples[arm_name] is None or self.latest_target_ee_samples[arm_name] is None:
+            if self.latest_robot_ee_samples[arm_name] is None:
                 return False, f"waiting for {arm_name} end-effector pose state"
+            if self.latest_flange_to_ee[arm_name] is None:
+                return False, f"waiting for {arm_name} flange-to-end-effector transform"
             if not self.deployment_mode and self._arm_action_sample(arm_name) is None:
                 return False, f"waiting for {arm_name} action joint states"
             if self.include_gripper and self.latest_robot_gripper_samples[arm_name] is None:
@@ -1405,6 +1407,25 @@ class LeRobotDataBridge(Node):
 
         return True, ""
 
+    def _target_pose_from_joints(
+        self, target_joints: list[float], flange_to_ee: np.ndarray
+    ) -> list[float]:
+        if self._target_fk is None:
+            try:
+                from utils.fr3_kinematics import (
+                    Fr3ForwardKinematics,
+                    matrix_to_pose_vector,
+                )
+            except ModuleNotFoundError as exc:
+                raise RuntimeError(
+                    "FR3 kinematics are required to record geometrically consistent EE targets. "
+                    "Start the bridge through scripts/start_data_collection_server.sh."
+                ) from exc
+            self._target_fk = Fr3ForwardKinematics()
+            self._matrix_to_pose_vector = matrix_to_pose_vector
+        target_matrix = self._target_fk.end_effector_pose(target_joints, flange_to_ee)
+        return self._matrix_to_pose_vector(target_matrix).tolist()
+
     def _publish_sample(self) -> None:
         if self.deployment_mode and self.deployment_state_source == "pylibfranka":
             self._refresh_deployment_samples()
@@ -1441,15 +1462,24 @@ class LeRobotDataBridge(Node):
             joint_state.extend(current_joints)
             target_joint.extend(target_joints)
             current_pose = self.latest_robot_ee_samples[arm_name].values
-            target_pose = self.latest_target_ee_samples[arm_name].values
+            if self.deployment_mode:
+                target_pose = list(current_pose)
+            else:
+                target_pose = self._target_pose_from_joints(
+                    target_joints,
+                    self.latest_flange_to_ee[arm_name],
+                )
+            from utils.fr3_kinematics import wrapped_pose_delta
+
+            pose_delta = wrapped_pose_delta(current_pose, target_pose).tolist()
             ee_pose.extend(current_pose)
             target_ee_pose.extend(target_pose)
-            delta_ee_pose.extend(np.asarray(target_pose, dtype=float) - np.asarray(current_pose, dtype=float))
+            delta_ee_pose.extend(pose_delta)
             if self.state_action_mode == "end_effector":
                 robot_state.extend(current_pose)
                 action.extend(
                     [0.0] * 6 if self.deployment_mode else
-                    (np.asarray(target_pose, dtype=float) - np.asarray(current_pose, dtype=float)).tolist()
+                    pose_delta
                 )
             else:
                 robot_state.extend(self.latest_robot_arm_samples[arm_name].values)
