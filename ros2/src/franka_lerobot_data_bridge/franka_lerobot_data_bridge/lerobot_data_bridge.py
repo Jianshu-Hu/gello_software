@@ -1426,10 +1426,20 @@ class LeRobotDataBridge(Node):
 
         robot_state: list[float] = []
         action: list[float] = []
+        joint_state: list[float] = []
+        target_joint: list[float] = []
         ee_pose: list[float] = []
         target_ee_pose: list[float] = []
         delta_ee_pose: list[float] = []
         for arm_name in self._required_arms():
+            current_joints = list(self.latest_robot_arm_samples[arm_name].values)
+            if self.deployment_mode:
+                target_joints = self._deployment_arm_action_values(arm_name)
+            else:
+                arm_sample = self._arm_action_sample(arm_name)
+                target_joints = [] if arm_sample is None else list(arm_sample.values)
+            joint_state.extend(current_joints)
+            target_joint.extend(target_joints)
             current_pose = self.latest_robot_ee_samples[arm_name].values
             target_pose = self.latest_target_ee_samples[arm_name].values
             ee_pose.extend(current_pose)
@@ -1448,13 +1458,23 @@ class LeRobotDataBridge(Node):
                 else:
                     action.extend(self._arm_action_values(arm_name))
             if self.include_gripper:
-                robot_state.extend(self.latest_robot_gripper_samples[arm_name].values)
+                current_gripper = list(self.latest_robot_gripper_samples[arm_name].values)
+                joint_state.extend(current_gripper)
+                if self.deployment_mode:
+                    target_joint.append(self.deployment_gripper_action_value)
+                else:
+                    target_joint.extend(self.latest_gripper_action_samples[arm_name].values)
+                robot_state.extend(current_gripper)
                 if self.deployment_mode:
                     action.append(self.deployment_gripper_action_value)
                 else:
                     action.extend(self.latest_gripper_action_samples[arm_name].values)
             if self.include_hand:
-                robot_state.extend(self.latest_hand_samples[arm_name].current)
+                current_hand = list(self.latest_hand_samples[arm_name].current)
+                target_hand = list(self.latest_hand_samples[arm_name].target)
+                joint_state.extend(current_hand)
+                target_joint.extend(target_hand)
+                robot_state.extend(current_hand)
                 action.extend(self.latest_hand_samples[arm_name].target)
 
         bundle_signature = tuple(
@@ -1551,6 +1571,10 @@ class LeRobotDataBridge(Node):
             "task": self.task_name,
             "state": robot_state,
             "action": action,
+            "joint_state": joint_state,
+            "target_joint": target_joint,
+            "joint_state_dim": len(joint_state),
+            "target_joint_dim": len(target_joint),
             "ee_pose": ee_pose,
             "target_ee_pose": target_ee_pose,
             "delta_ee_pose": delta_ee_pose,
