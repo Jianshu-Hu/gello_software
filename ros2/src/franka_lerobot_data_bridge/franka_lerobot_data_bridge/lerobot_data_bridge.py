@@ -307,6 +307,7 @@ class LeRobotDataBridge(Node):
         self.latest_flange_to_ee: dict[str, np.ndarray | None] = {"left": None, "right": None}
         self._target_fk: Any | None = None
         self._matrix_to_pose_vector: Any | None = None
+        self._target_ee_source = "deployment_hold_current_pose" if self.deployment_mode else None
         self._ee_ik_model: Any | None = None
         self._ee_ik_frame_id: int | None = None
         self._ee_ik_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
@@ -1414,6 +1415,7 @@ class LeRobotDataBridge(Node):
             try:
                 from utils.fr3_kinematics import (
                     Fr3ForwardKinematics,
+                    TARGET_EE_SOURCE_PAIRED_JOINT_FK,
                     matrix_to_pose_vector,
                 )
             except ModuleNotFoundError as exc:
@@ -1423,6 +1425,11 @@ class LeRobotDataBridge(Node):
                 ) from exc
             self._target_fk = Fr3ForwardKinematics()
             self._matrix_to_pose_vector = matrix_to_pose_vector
+            self._target_ee_source = TARGET_EE_SOURCE_PAIRED_JOINT_FK
+            self.get_logger().info(
+                "EE target FK initialized with "
+                f"{self._target_fk.backend!r} backend; targets are derived from paired target joints."
+            )
         target_matrix = self._target_fk.end_effector_pose(target_joints, flange_to_ee)
         return self._matrix_to_pose_vector(target_matrix).tolist()
 
@@ -1608,6 +1615,10 @@ class LeRobotDataBridge(Node):
             "ee_pose": ee_pose,
             "target_ee_pose": target_ee_pose,
             "delta_ee_pose": delta_ee_pose,
+            "target_ee_source": self._target_ee_source,
+            "target_ee_fk_backend": (
+                None if self._target_fk is None else self._target_fk.backend
+            ),
             "state_action_mode": self.state_action_mode,
             "arm_action_representation": self._arm_action_representation(),
             "gripper_action_representation": self._gripper_action_representation(),
