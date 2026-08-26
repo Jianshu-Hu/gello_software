@@ -136,7 +136,7 @@ def generate_launch_description():
             DeclareLaunchArgument(
                 "state_action_mode",
                 default_value="",
-                description="Policy state/action representation: joint or end_effector.",
+                description="Deployment policy state/action representation; recording always publishes the neutral joint view.",
             ),
             DeclareLaunchArgument(
                 "hand_telemetry_host",

@@ -228,6 +228,13 @@ class LeRobotDataBridge(Node):
             self.state_action_mode = "end_effector"
         if self.state_action_mode not in {"joint", "end_effector"}:
             raise ValueError("state_action_mode must be 'joint' or 'end_effector'")
+        # Recording always publishes the neutral joint state/action vector.  The
+        # complete EE and joint representations are emitted in the auxiliary
+        # fields below, so training can select either view without recollecting
+        # the trajectory.  The mode parameter is only a deployment-time policy
+        # contract.
+        if not self.deployment_mode:
+            self.state_action_mode = "joint"
         self.require_gripper_freshness = bool(
             self.get_parameter("require_gripper_freshness").value
         )
@@ -1288,7 +1295,7 @@ class LeRobotDataBridge(Node):
 
     def _arm_action_representation(self) -> str:
         if self.state_action_mode == "end_effector":
-            return "delta_end_effector_pose"
+            return "delta_end_effector_position_rotation_vector"
         return "delta_joint_position"
 
     def _gripper_action_representation(self) -> str:
