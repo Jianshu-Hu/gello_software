@@ -188,15 +188,16 @@ def generate_robot_nodes(context):
                 "--param-file",
                 broadcaster_override_file.name,
             ],
+            # The deployment bridge consumes this broadcaster for measured
+            # EE pose and flange-to-EE state when deployment_mode is enabled.
+            # Keep it active for real hardware; only fake hardware lacks the
+            # Franka robot-state interface.
             condition=UnlessCondition(
                 PythonExpression(
                     [
                         "'",
                         LaunchConfiguration("use_fake_hardware"),
-                        "' == 'true' or '",
-                        LaunchConfiguration("deployment_mode"),
-                        "'",
-                        " == 'true'",
+                        "' == 'true'",
                     ]
                 )
             ),
