@@ -100,19 +100,10 @@ class PoseSample:
 
 
 def _pose_message_to_vector(pose: Any) -> list[float]:
-    """Convert geometry_msgs Pose to x/y/z/roll/pitch/yaw."""
-    x, y, z = float(pose.position.x), float(pose.position.y), float(pose.position.z)
-    qx, qy, qz, qw = (float(pose.orientation.x), float(pose.orientation.y),
-                      float(pose.orientation.z), float(pose.orientation.w))
-    sinr_cosp = 2.0 * (qw * qx + qy * qz)
-    cosr_cosp = 1.0 - 2.0 * (qx * qx + qy * qy)
-    roll = math.atan2(sinr_cosp, cosr_cosp)
-    sinp = 2.0 * (qw * qy - qz * qx)
-    pitch = math.copysign(math.pi / 2.0, sinp) if abs(sinp) >= 1.0 else math.asin(sinp)
-    siny_cosp = 2.0 * (qw * qz + qx * qy)
-    cosy_cosp = 1.0 - 2.0 * (qy * qy + qz * qz)
-    yaw = math.atan2(siny_cosp, cosy_cosp)
-    return [x, y, z, roll, pitch, yaw]
+    """Convert geometry_msgs Pose to position plus continuous 6D rotation."""
+    from utils.fr3_kinematics import matrix_to_ee_state
+
+    return matrix_to_ee_state(_pose_message_to_matrix(pose)).tolist()
 
 
 def _pose_message_to_matrix(pose: Any) -> np.ndarray:
@@ -131,14 +122,9 @@ def _pose_message_to_matrix(pose: Any) -> np.ndarray:
 
 def _transform_to_pose_vector(values: Any) -> list[float]:
     matrix = np.asarray(values, dtype=float).reshape((4, 4), order="F")
-    pitch = math.asin(float(np.clip(-matrix[2, 0], -1.0, 1.0)))
-    if abs(math.cos(pitch)) > 1e-8:
-        roll = math.atan2(float(matrix[2, 1]), float(matrix[2, 2]))
-        yaw = math.atan2(float(matrix[1, 0]), float(matrix[0, 0]))
-    else:
-        roll = 0.0
-        yaw = math.atan2(float(-matrix[0, 1]), float(matrix[1, 1]))
-    return [float(matrix[0, 3]), float(matrix[1, 3]), float(matrix[2, 3]), roll, pitch, yaw]
+    from utils.fr3_kinematics import matrix_to_ee_state
+
+    return matrix_to_ee_state(matrix).tolist()
 
 
 @dataclass
@@ -1007,7 +993,7 @@ class LeRobotDataBridge(Node):
             if isinstance(joint_target, list) and joint_target:
                 return True
             ee_target = command.get(f"{arm_name}_ee_pose_target")
-            if isinstance(ee_target, list) and len(ee_target) == 6:
+            if isinstance(ee_target, list) and len(ee_target) == 9:
                 return True
             gripper_command = command.get(f"{arm_name}_gripper_command")
             if gripper_command is not None:
@@ -1228,17 +1214,18 @@ class LeRobotDataBridge(Node):
         target = np.asarray(target_values, dtype=float)
         current = self.latest_robot_arm_samples.get(arm_name)
         flange_to_ee = self.latest_flange_to_ee.get(arm_name)
-        if target.shape != (6,) or current is None or flange_to_ee is None:
+        if target.shape != (9,) or current is None or flange_to_ee is None:
             return None
         cached = self._ee_ik_cache.get(arm_name)
         if cached is not None and np.max(np.abs(cached[0] - target)) < 1e-6:
             return cached[1].tolist()
         try:
-            from data_collection.move_to_target_ee import build_fr3_model, pose_vector_to_matrix, solve_fr3_ik
+            from data_collection.move_to_target_ee import build_fr3_model, solve_fr3_ik
+            from utils.fr3_kinematics import ee_state_to_matrix
             if self._ee_ik_model is None or self._ee_ik_frame_id is None:
                 self._ee_ik_model, self._ee_ik_frame_id = build_fr3_model()
             result = solve_fr3_ik(
-                np.asarray(current.values, dtype=float), pose_vector_to_matrix(target),
+                np.asarray(current.values, dtype=float), ee_state_to_matrix(target),
                 np.asarray(flange_to_ee, dtype=float), self._ee_ik_model, self._ee_ik_frame_id,
             )
         except Exception as exc:
@@ -1279,27 +1266,17 @@ class LeRobotDataBridge(Node):
         return self.latest_robot_arm_samples[arm_name]
 
     def _arm_action_values(self, arm_name: str) -> list[float]:
-        if self.arm_action_source == "topic":
-            sample = self.latest_arm_action_samples[arm_name]
-            if sample is None:
-                return []
-            return list(sample.values)
-
         source_sample = self._arm_action_sample(arm_name)
-        if source_sample is None:
+        current_sample = self.latest_robot_arm_samples[arm_name]
+        if source_sample is None or current_sample is None:
             return []
-
-        if self.arm_action_source == "robot_state":
-            return list(source_sample.values)
-
-        previous_sample = self.last_published_arm_action_samples[arm_name]
-        if previous_sample is None:
-            return [0.0] * len(source_sample.values)
-
+        # Policy-facing joint deltas always mean target minus the paired measured
+        # joint state. The historical topic_delta path used adjacent target
+        # samples and must not define the current data contract.
         return [
-            current_value - previous_value
-            for current_value, previous_value in zip(
-                source_sample.values, previous_sample.values, strict=True
+            target_value - measured_value
+            for target_value, measured_value in zip(
+                source_sample.values, current_sample.values, strict=True
             )
         ]
 
@@ -1312,11 +1289,7 @@ class LeRobotDataBridge(Node):
     def _arm_action_representation(self) -> str:
         if self.state_action_mode == "end_effector":
             return "delta_end_effector_pose"
-        if self.deployment_mode:
-            return "absolute_joint_position"
-        if self.arm_action_source in {"topic_delta", "robot_delta"}:
-            return "delta_joint_position"
-        return "absolute_joint_position"
+        return "delta_joint_position"
 
     def _gripper_action_representation(self) -> str:
         if GRIPPER_ACTION_REPRESENTATION not in {"absolute_width", "binary_open_close"}:
@@ -1416,7 +1389,7 @@ class LeRobotDataBridge(Node):
                 from utils.fr3_kinematics import (
                     Fr3ForwardKinematics,
                     TARGET_EE_SOURCE_PAIRED_JOINT_FK,
-                    matrix_to_pose_vector,
+                    matrix_to_ee_state,
                 )
             except ModuleNotFoundError as exc:
                 raise RuntimeError(
@@ -1424,7 +1397,7 @@ class LeRobotDataBridge(Node):
                     "Start the bridge through scripts/start_data_collection_server.sh."
                 ) from exc
             self._target_fk = Fr3ForwardKinematics()
-            self._matrix_to_pose_vector = matrix_to_pose_vector
+            self._matrix_to_pose_vector = matrix_to_ee_state
             self._target_ee_source = TARGET_EE_SOURCE_PAIRED_JOINT_FK
             self.get_logger().info(
                 "EE target FK initialized with "
@@ -1476,9 +1449,11 @@ class LeRobotDataBridge(Node):
                     target_joints,
                     self.latest_flange_to_ee[arm_name],
                 )
-            from utils.fr3_kinematics import wrapped_pose_delta
+            from utils.fr3_kinematics import ee_delta, ee_state_to_matrix
 
-            pose_delta = wrapped_pose_delta(current_pose, target_pose).tolist()
+            pose_delta = ee_delta(
+                ee_state_to_matrix(current_pose), ee_state_to_matrix(target_pose)
+            ).tolist()
             ee_pose.extend(current_pose)
             target_ee_pose.extend(target_pose)
             delta_ee_pose.extend(pose_delta)
