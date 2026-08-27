@@ -301,8 +301,7 @@ class LeRobotDataBridge(Node):
         self._target_fk: Any | None = None
         self._matrix_to_pose_vector: Any | None = None
         self._target_ee_source = "deployment_hold_current_pose" if self.deployment_mode else None
-        self._ee_ik_model: Any | None = None
-        self._ee_ik_frame_id: int | None = None
+        self._ee_ik_kinematics: Any | None = None
         self._ee_ik_cache: dict[str, tuple[np.ndarray, np.ndarray]] = {}
         self.last_published_arm_action_samples: dict[str, JointSample | None] = {
             "left": None,
@@ -1227,13 +1226,21 @@ class LeRobotDataBridge(Node):
         if cached is not None and np.max(np.abs(cached[0] - target)) < 1e-6:
             return cached[1].tolist()
         try:
-            from data_collection.move_to_target_ee import build_fr3_model, solve_fr3_ik
-            from utils.fr3_kinematics import ee_state_to_matrix
-            if self._ee_ik_model is None or self._ee_ik_frame_id is None:
-                self._ee_ik_model, self._ee_ik_frame_id = build_fr3_model()
+            from data_collection.move_to_target_ee import solve_fr3_ik
+            from utils.fr3_kinematics import Fr3ForwardKinematics, ee_state_to_matrix
+            if self._ee_ik_kinematics is None:
+                # The ROS system interpreter intentionally does not inherit the
+                # policy Conda environment. Use the repository's exact FR3
+                # serial-chain implementation so EE deployment does not depend
+                # on Pinocchio/xacro being installed into the ROS interpreter.
+                self._ee_ik_kinematics = Fr3ForwardKinematics(backend="numpy")
+                self.get_logger().info(
+                    "EE deployment IK initialized with the dependency-free NumPy FR3 backend."
+                )
             result = solve_fr3_ik(
                 np.asarray(current.values, dtype=float), ee_state_to_matrix(target),
-                np.asarray(flange_to_ee, dtype=float), self._ee_ik_model, self._ee_ik_frame_id,
+                np.asarray(flange_to_ee, dtype=float), kinematics=self._ee_ik_kinematics,
+                try_alternative_seeds=False, max_function_evaluations=100,
             )
         except Exception as exc:
             self.get_logger().warning(f"Unable to solve EE deployment target for {arm_name}: {exc}")
