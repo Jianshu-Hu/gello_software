@@ -12,6 +12,9 @@
       deployment_joint_impedance_controller:
         type: franka_fr3_arm_controllers/DeploymentJointImpedanceController
 
+      fr3_arm_controller:
+        type: joint_trajectory_controller/JointTrajectoryController
+
       joint_state_broadcaster:
         type: joint_state_broadcaster/JointStateBroadcaster
 
